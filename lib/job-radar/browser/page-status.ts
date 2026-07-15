@@ -115,20 +115,27 @@ function hasApplyAction(text: string): boolean {
 
 function parseValidThrough(value: string | null | undefined): number {
   if (!value) return Number.NaN;
-  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
-  if (!dateOnly) return Date.parse(value);
+  const calendarDate = /^(\d{4})-(\d{2})-(\d{2})(?:$|[Tt])/.exec(value);
+  if (!calendarDate) return Date.parse(value);
 
-  const endOfDay = new Date(`${value}T23:59:59.999Z`);
-  const [, year, month, day] = dateOnly.map(Number);
+  const [, yearText, monthText, dayText] = calendarDate;
+  const year = Number(yearText);
+  const month = Number(monthText);
+  const day = Number(dayText);
+  const normalizedDate = new Date(
+    `${yearText}-${monthText}-${dayText}T00:00:00.000Z`,
+  );
   if (
-    endOfDay.getUTCFullYear() !== year ||
-    endOfDay.getUTCMonth() + 1 !== month ||
-    endOfDay.getUTCDate() !== day
+    normalizedDate.getUTCFullYear() !== year ||
+    normalizedDate.getUTCMonth() + 1 !== month ||
+    normalizedDate.getUTCDate() !== day
   ) {
     return Number.NaN;
   }
 
-  return endOfDay.getTime();
+  return value.length === 10
+    ? Date.parse(`${value}T23:59:59.999Z`)
+    : Date.parse(value);
 }
 
 export function classifyPageStatus(

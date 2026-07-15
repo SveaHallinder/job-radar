@@ -177,6 +177,8 @@ describe("classifyPageStatus", () => {
     ["invalid", "not-a-date"],
     ["invalid calendar date", "2026-02-30"],
     ["invalid leap date", "2025-02-29"],
+    ["invalid datetime calendar date", "2026-02-30T10:00:00Z"],
+    ["invalid datetime leap date", "2025-02-29T10:00:00Z"],
   ])("does not classify a validThrough %s as inactive", (_case, validThrough) => {
     expect(
       classifyPageStatus(
