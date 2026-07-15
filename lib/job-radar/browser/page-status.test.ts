@@ -34,6 +34,16 @@ describe("classifyPageStatus", () => {
     expect(classifyPageStatus({ status: 200, url, text })).toBe("blocked");
   });
 
+  it("recognizes the planned unusual-traffic warning without trailing copy", () => {
+    expect(
+      classifyPageStatus({
+        status: 410,
+        url: "https://jobs.example.com/roles/123",
+        text: "Our systems have detected unusual traffic. This job is no longer available. Apply now.",
+      }),
+    ).toBe("blocked");
+  });
+
   it("keeps blocked precedence over stale inactive and login signals", () => {
     expect(
       classifyPageStatus({
@@ -165,6 +175,8 @@ describe("classifyPageStatus", () => {
     ["equal to now", "2026-07-15T10:00:00.000Z"],
     ["after now", "2026-07-15T10:00:00.001Z"],
     ["invalid", "not-a-date"],
+    ["invalid calendar date", "2026-02-30"],
+    ["invalid leap date", "2025-02-29"],
   ])("does not classify a validThrough %s as inactive", (_case, validThrough) => {
     expect(
       classifyPageStatus(
@@ -217,6 +229,16 @@ describe("classifyPageStatus", () => {
         status: 200,
         url: "https://jobs.example.com/roles/123",
         text: "This position is filled with opportunities. Apply now.",
+      }),
+    ).toBe("active");
+  });
+
+  it("requires filled-position copy to be a terminal status", () => {
+    expect(
+      classifyPageStatus({
+        status: 200,
+        url: "https://jobs.example.com/roles/123",
+        text: "This role is filled to the brim with opportunities. Apply now.",
       }),
     ).toBe("active");
   });

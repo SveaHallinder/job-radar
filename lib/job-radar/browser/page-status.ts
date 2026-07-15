@@ -56,6 +56,7 @@ function hasBlockingCopy(text: string): boolean {
     /\bsecurity verification (?:is )?(?:required|needed)\b/i,
     /\b(?:complete|perform) (?:a |the )?security verification\b/i,
     /\bverify (?:that )?you(?: are|'re) (?:a )?human\b/i,
+    /\bour systems have detected unusual traffic\b/i,
     /\b(?:detected|noticed) unusual traffic (?:from|on)\b/i,
     /\bunusual traffic (?:has been|was) detected\b/i,
   ].some((pattern) => pattern.test(text));
@@ -87,7 +88,7 @@ function hasLoginCopy(text: string): boolean {
 function hasInactiveCopy(text: string): boolean {
   return [
     /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:has expired|is expired|has closed|is closed)\b/i,
-    /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:has been filled|is filled|was filled)\b(?!\s+with\b)/i,
+    /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:has been filled|is filled|was filled)\b(?=\s*(?:[.!](?:\s|$)|$))/i,
     /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:is |was )?no longer available\b/i,
     /\bapplications? (?:are|is) closed\b/i,
     /\bno longer accepting applications\b/i,
@@ -114,10 +115,20 @@ function hasApplyAction(text: string): boolean {
 
 function parseValidThrough(value: string | null | undefined): number {
   if (!value) return Number.NaN;
-  const timestamp = /^\d{4}-\d{2}-\d{2}$/.test(value)
-    ? `${value}T23:59:59.999Z`
-    : value;
-  return Date.parse(timestamp);
+  const dateOnly = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value);
+  if (!dateOnly) return Date.parse(value);
+
+  const endOfDay = new Date(`${value}T23:59:59.999Z`);
+  const [, year, month, day] = dateOnly.map(Number);
+  if (
+    endOfDay.getUTCFullYear() !== year ||
+    endOfDay.getUTCMonth() + 1 !== month ||
+    endOfDay.getUTCDate() !== day
+  ) {
+    return Number.NaN;
+  }
+
+  return endOfDay.getTime();
 }
 
 export function classifyPageStatus(
