@@ -34,7 +34,7 @@ function parseLinkedInSearchUrls(value: string | undefined): string[] {
     try {
       const url = new URL(value);
       const isJobsSearch =
-        url.pathname === "/jobs/search" || url.pathname.startsWith("/jobs/search/");
+        url.pathname === "/jobs/search" || url.pathname === "/jobs/search/";
 
       if (
         url.origin !== "https://www.linkedin.com" ||

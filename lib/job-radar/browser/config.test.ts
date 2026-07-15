@@ -82,6 +82,20 @@ describe("getBrowserDiscoveryConfig", () => {
     );
   });
 
+  it("rejects nested paths below the LinkedIn jobs search page", () => {
+    expect(() =>
+      getBrowserDiscoveryConfig(
+        {
+          LINKEDIN_SEARCH_URLS:
+            "https://www.linkedin.com/jobs/search/anything?keywords=typescript",
+        },
+        cwd,
+      ),
+    ).toThrowError(
+      "[job radar browser] LINKEDIN_SEARCH_URLS must contain only https://www.linkedin.com/jobs/search URLs.",
+    );
+  });
+
   it("rejects limit values above their hard caps", () => {
     expect(() =>
       getBrowserDiscoveryConfig(
