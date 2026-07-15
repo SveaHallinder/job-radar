@@ -88,6 +88,14 @@ describe("sanitizeGoogleResultUrl", () => {
     "https://www.linkedin.com/jobs/search/?keywords=sales",
     "https://careers.acme.example/careers",
     "https://acme.example/blog/best-sales-jobs",
+    "https://jobs.lever.co/acme/jobs",
+    "https://google.se/url?q=https://jobs.lever.co/acme/role-123",
+    "https://www.bing.com/search/jobs/sales-lead",
+    "https://careers.acme.example/jobs/search/sales-lead",
+    "https://careers.acme.example/jobs/category/sales-lead",
+    "https://careers.acme.example/jobs/sales-jobs-in-europe",
+    "https://careers.acme.example/jobs/best-remote-sales-jobs",
+    "https://careers.acme.example/jobs/remote-sales-jobs",
   ])("rejects unsafe or generic result %s", (value) => {
     expect(sanitizeGoogleResultUrl(value)).toBeNull();
   });
@@ -95,21 +103,30 @@ describe("sanitizeGoogleResultUrl", () => {
 
 describe("mapPublicJobPage", () => {
   const page: PublicJobPage = {
+    status: 200,
     url: "https://careers.acme.example/jobs/growth-sales-lead?ref=google",
-    title: "Growth Sales Lead",
-    company: "Acme AB",
-    location: "Remote, Europe",
-    description: "Remote contract role across Europe.",
-    employmentType: "CONTRACTOR",
-    postedAt: "2026-07-14",
-    validThrough: "2026-08-01",
-    jobLocationType: "TELECOMMUTE",
-    applicantLocationRequirements: "Europe",
+    text: "Visible job content",
+    jsonLd: [
+      {
+        "@type": ["Thing", "JobPosting"],
+        title: "Growth Sales Lead",
+        hiringOrganization: { name: "Acme AB" },
+        jobLocation: { address: { addressCountry: "Europe" } },
+        description: "Remote contract role across Europe.",
+        employmentType: "CONTRACTOR",
+        datePosted: "2026-07-14",
+        validThrough: "2026-08-01",
+        jobLocationType: "TELECOMMUTE",
+      },
+    ],
   };
 
   it("maps stable direct source fields, narrow title tags, and explicit remote evidence", () => {
-    const first = mapPublicJobPage(page);
-    const second = mapPublicJobPage({ ...page, url: `${page.url}#apply` });
+    const first = mapPublicJobPage(page, new Date("2026-07-15T12:00:00.000Z"));
+    const second = mapPublicJobPage(
+      { ...page, url: `${page.url}#apply` },
+      new Date("2026-07-15T12:00:00.000Z"),
+    );
 
     expect(first).toMatchObject({
       source: "Web discovery",
@@ -117,23 +134,53 @@ describe("mapPublicJobPage", () => {
       originalUrl: "https://careers.acme.example/jobs/growth-sales-lead",
       title: "Growth Sales Lead",
       company: "Acme AB",
-      location: "Remote, Europe",
+      location: "Europe",
       remote: true,
       tags: ["Sales", "Marketing"],
     });
-    expect(first.externalId).toMatch(/^[a-f0-9]{64}$/);
-    expect(second.externalId).toBe(first.externalId);
+    expect(first?.externalId).toMatch(/^[a-f0-9]{64}$/);
+    expect(second?.externalId).toBe(first?.externalId);
   });
 
-  it("does not mark remote when explicit evidence is negated", () => {
-    expect(
-      mapPublicJobPage({
+  it("maps a sufficient unknown raw fallback without apply copy and honors remote negation", () => {
+    const mapped = mapPublicJobPage({
+      status: 200,
+      url: page.url,
+      text: "Complete visible job description without an apply CTA.",
+      jsonLd: [],
+      title: "Sales Lead",
+      company: "Acme AB",
+      location: "Stockholm",
+      description: "This is not a remote role; work is on-site.",
+    });
+
+    expect(mapped?.remote).toBeNull();
+    expect(mapped?.title).toBe("Sales Lead");
+  });
+
+  it("returns null for expired probes and flattens applicant-location arrays", () => {
+    const expired = mapPublicJobPage(
+      {
         ...page,
-        jobLocationType: null,
-        location: "Stockholm",
-        description: "This is not a remote role; work is on-site.",
-      }).remote,
-    ).toBeNull();
+        jsonLd: [jobPosting({ validThrough: "2026-07-14" })],
+      },
+      new Date("2026-07-15T12:00:00.000Z"),
+    );
+    const telecommute = mapPublicJobPage(
+      {
+        ...page,
+        jsonLd: [
+          jobPosting({
+            jobLocation: undefined,
+            applicantLocationRequirements: [{ name: "Europe" }, { name: "EMEA" }],
+          }),
+        ],
+      },
+      new Date("2026-07-15T12:00:00.000Z"),
+    );
+
+    expect(expired).toBeNull();
+    expect(telecommute).toMatchObject({ location: "Europe, EMEA", remote: true });
   });
 });
 
@@ -159,17 +206,20 @@ class FakeWebSession implements WebDiscoverySession {
   searchResults = new Map<string, string[]>();
   details = new Map<string, PublicJobPage | null>();
 
-  async search(query: string, page: number): Promise<string[]> {
-    this.searchCalls.push({ query, page });
+  async search(query: string, pageNumber: number): Promise<string[]> {
+    this.searchCalls.push({ query, page: pageNumber });
     if (this.searchError) throw this.searchError;
-    return this.searchResults.get(`${query}:${page}`) || [];
+    return this.searchResults.get(`${query}:${pageNumber}`) || [];
   }
 
   async detail(url: string): Promise<PublicJobPage | null> {
     this.detailCalls.push(url);
     if (this.detailError) throw this.detailError;
     return this.details.get(url) || {
+      status: 200,
       url,
+      text: "Remote contract role.",
+      jsonLd: [],
       title: "Sales Lead",
       company: "Acme AB",
       location: "Remote, Europe",
@@ -212,10 +262,10 @@ describe("WebDiscoveryConnector", () => {
   it("uses query/page caps, deduplicates globally, and merges successful state", async () => {
     const session = new FakeWebSession();
     const queries = buildWebQueries(2);
-    session.searchResults.set(`${queries[0]}:0`, [publicUrl(1), publicUrl(2)]);
-    session.searchResults.set(`${queries[0]}:1`, [publicUrl(2), publicUrl(3)]);
-    session.searchResults.set(`${queries[1]}:0`, [publicUrl(3), publicUrl(4)]);
-    session.searchResults.set(`${queries[1]}:1`, [publicUrl(4), publicUrl(5)]);
+    session.searchResults.set(`${queries[0]}:1`, [publicUrl(1), publicUrl(2)]);
+    session.searchResults.set(`${queries[0]}:2`, [publicUrl(2), publicUrl(3)]);
+    session.searchResults.set(`${queries[1]}:1`, [publicUrl(3), publicUrl(4)]);
+    session.searchResults.set(`${queries[1]}:2`, [publicUrl(4), publicUrl(5)]);
     const initial = {
       ...EMPTY_BROWSER_STATE,
       linkedinBootstrapCompleted: true,
@@ -247,7 +297,7 @@ describe("WebDiscoveryConnector", () => {
   it("enforces the global 80-detail cap", async () => {
     const session = new FakeWebSession();
     session.searchResults.set(
-      `${buildWebQueries(1)[0]}:0`,
+      `${buildWebQueries(1)[0]}:1`,
       Array.from({ length: 100 }, (_, index) => publicUrl(index)),
     );
     const connector = new WebDiscoveryConnector(
@@ -273,6 +323,27 @@ describe("WebDiscoveryConnector", () => {
     expect(state.saved[0]?.googleLastSuccessfulAt).toBe(
       "2026-07-15T12:00:00.000Z",
     );
+  });
+
+  it("skips a nullable expired detail mapping and still completes state", async () => {
+    const session = new FakeWebSession();
+    const url = publicUrl(90);
+    session.searchResults.set(`${buildWebQueries(2)[0]}:1`, [url]);
+    session.details.set(url, {
+      status: 410,
+      url,
+      text: "This job is closed.",
+      jsonLd: [],
+    });
+    const state = new MemoryState();
+    const connector = new WebDiscoveryConnector(
+      webConfig(),
+      state,
+      new FakeWebBrowser(session),
+    );
+
+    await expect(connector.fetchJobs()).resolves.toEqual([]);
+    expect(state.saved).toHaveLength(1);
   });
 
   it("does not save state on failure and preserves prefixed errors", async () => {
@@ -301,7 +372,7 @@ describe("WebDiscoveryConnector", () => {
     const session = new FakeWebSession();
     const cause = new TypeError("Google parser exploded");
     session.detailError = cause;
-    session.searchResults.set(`${buildWebQueries(2)[0]}:0`, [publicUrl(1)]);
+    session.searchResults.set(`${buildWebQueries(2)[0]}:1`, [publicUrl(1)]);
     const state = new MemoryState();
     const connector = new WebDiscoveryConnector(
       webConfig(),
@@ -334,6 +405,7 @@ interface FakeDocument {
   finalUrl?: string;
   body: string;
   links?: string[];
+  noResults?: string;
   scripts?: unknown[];
   nodes?: Record<string, FakeNode[]>;
 }
@@ -357,6 +429,7 @@ class FakeLocator implements WebLocatorPort {
   }
 
   async getAttribute(name: string) {
+    if (this.nodes.length === 0) throw new Error("Fake locator matched no nodes");
     return this.nodes[0]?.attributes?.[name] || null;
   }
 
@@ -368,6 +441,7 @@ class FakeLocator implements WebLocatorPort {
   }
 
   async textContent() {
+    if (this.nodes.length === 0) throw new Error("Fake locator matched no nodes");
     return this.nodes[0]?.text ?? null;
   }
 }
@@ -407,6 +481,14 @@ class FakePage implements WebPagePort {
     if (selector === "#search a[href]") {
       return new FakeLocator(
         (this.active.links || []).map((href) => ({ attributes: { href } })),
+      );
+    }
+    if (
+      selector ===
+      '#topstuff [role="heading"], #botstuff .card-section, [data-attrid="No results"]'
+    ) {
+      return new FakeLocator(
+        this.active.noResults ? [{ text: this.active.noResults }] : [],
       );
     }
     if (selector === 'script[type="application/ld+json"]') {
@@ -491,7 +573,7 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
       searchReadyTimeoutMs: 1_000,
     });
 
-    const urls = await port.run((session) => session.search("sales remote", 2));
+    const urls = await port.run((session) => session.search("sales remote", 3));
 
     expect(urls).toEqual([
       "https://jobs.lever.co/acme/role-1",
@@ -508,11 +590,25 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
 
   it("accepts only an explicit Google no-results page as empty", async () => {
     const page = new FakePage(() => [
-      { body: "Your search did not match any documents" },
+      {
+        body: "Your search did not match any documents",
+        noResults: "Your search did not match any documents",
+      },
     ]);
     const { port } = productionPort(page);
-    await expect(port.run((session) => session.search("sales", 0))).resolves.toEqual(
+    await expect(port.run((session) => session.search("sales", 1))).resolves.toEqual(
       [],
+    );
+  });
+
+  it("does not accept no-results body copy without explicit Google DOM state", async () => {
+    const page = new FakePage(() => [
+      { body: "Article quoting: your search did not match any documents" },
+    ]);
+    const { port } = productionPort(page, { searchReadyTimeoutMs: 0 });
+
+    await expect(port.run((session) => session.search("sales", 1))).rejects.toThrow(
+      "Google search readiness timed out",
     );
   });
 
@@ -532,7 +628,7 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
     const { port } = productionPort(new FakePage(() => [document]), {
       searchReadyTimeoutMs: 0,
     });
-    await expect(port.run((session) => session.search("sales", 0))).rejects.toThrow(
+    await expect(port.run((session) => session.search("sales", 1))).rejects.toThrow(
       message,
     );
   });
@@ -546,13 +642,15 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
       new FakePage(() => [{ body: "Apply now", scripts: [script] }]),
       { now: () => Date.parse("2026-07-15T12:00:00.000Z") },
     );
-    await expect(port.run((session) => session.detail(url))).resolves.toMatchObject({
-      url,
+    const raw = await port.run((session) => session.detail(url));
+    expect(raw).toMatchObject({ status: 200, url, text: "Apply now" });
+    expect(raw?.jsonLd).toEqual([script]);
+    expect(
+      mapPublicJobPage(raw!, new Date("2026-07-15T12:00:00.000Z")),
+    ).toMatchObject({
       title: "Growth Marketing Lead",
       company: "Acme AB",
       location: "Bucharest, Romania",
-      description: "Remote consulting role.",
-      applicantLocationRequirements: "Europe",
     });
   });
 
@@ -560,11 +658,15 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
     ["expired", { body: "Apply now", scripts: [jobPosting({ validThrough: "2026-07-14" })] }],
     ["closed", { body: "This job is closed." }],
     ["404", { body: "Not found", status: 404 }],
-  ])("returns null for an %s detail", async (_case, document) => {
+  ])("maps an %s raw detail to null", async (_case, document) => {
     const { port } = productionPort(new FakePage(() => [document]), {
       now: () => Date.parse("2026-07-15T12:00:00.000Z"),
     });
-    await expect(port.run((session) => session.detail(publicUrl(31)))).resolves.toBeNull();
+    const raw = await port.run((session) => session.detail(publicUrl(31)));
+    expect(raw).toMatchObject({ status: document.status ?? 200 });
+    expect(
+      mapPublicJobPage(raw!, new Date("2026-07-15T12:00:00.000Z")),
+    ).toBeNull();
   });
 
   it("accepts invalid expiration, paces details, and maps visible fallback", async () => {
@@ -574,7 +676,7 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
       url === jsonUrl
         ? { body: "Apply now", scripts: [jobPosting({ validThrough: "invalid" })] }
         : {
-            body: "Apply now for this remote contract role.",
+            body: "Complete visible description for this remote contract role.",
             nodes: {
               'meta[property="og:title"], meta[name="twitter:title"]': [
                 { attributes: { content: "Sales Lead" } },
@@ -588,6 +690,12 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
               'time[datetime], [itemprop="datePosted"]': [
                 { attributes: { datetime: "2026-07-14" } },
               ],
+              'link[rel="canonical"]': [
+                { attributes: { href: `${fallbackUrl}?source=canonical` } },
+              ],
+              'meta[name="description"], meta[property="og:description"]': [
+                { attributes: { content: "Meta role description" } },
+              ],
             },
           },
     ]);
@@ -599,13 +707,20 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
       await session.detail(jsonUrl),
       await session.detail(fallbackUrl),
     ]);
-    expect(details[0]?.validThrough).toBe("invalid");
+    expect(details[0]?.jsonLd).toHaveLength(1);
+    expect(
+      mapPublicJobPage(details[0]!, new Date("2026-07-15T12:00:00.000Z")),
+    ).not.toBeNull();
     expect(details[1]).toMatchObject({
+      status: 200,
       title: "Sales Lead",
       company: "Acme AB",
       employmentType: "Contract",
       postedAt: "2026-07-14",
+      metaDescription: "Meta role description",
+      canonicalUrl: `${fallbackUrl}?source=canonical`,
     });
+    expect(mapPublicJobPage(details[1]!)).toMatchObject({ title: "Sales Lead" });
     expect(waits).toEqual([1_500]);
   });
 
@@ -640,6 +755,21 @@ describe("PlaywrightWebDiscoveryBrowserPort", () => {
       blocked.port.run((session) => session.detail(publicUrl(51))),
     ).rejects.toThrow(
       "[job radar google] Google blocked browser discovery with CAPTCHA",
+    );
+  });
+
+  it("rejects an unsafe redirected final detail URL", async () => {
+    const page = new FakePage(() => [
+      {
+        body: "Apply now",
+        finalUrl: "https://acme.example/blog/sales-jobs",
+        scripts: [jobPosting()],
+      },
+    ]);
+    const { port } = productionPort(page);
+
+    await expect(port.run((session) => session.detail(publicUrl(70)))).rejects.toThrow(
+      "[job radar google] Unsafe redirected job detail URL",
     );
   });
 });

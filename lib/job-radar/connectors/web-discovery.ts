@@ -12,20 +12,35 @@ const BLOCKED_ERROR =
   `${ERROR_PREFIX} Google blocked browser discovery with CAPTCHA`;
 
 export interface PublicJobPage {
+  status: number | null;
+  url: string;
+  text: string;
+  jsonLd: unknown[];
+  title?: string | null;
+  company?: string | null;
+  location?: string | null;
+  description?: string | null;
+  employmentType?: string | null;
+  postedAt?: string | null;
+  metaDescription?: string | null;
+  canonicalUrl?: string | null;
+}
+
+interface NormalizedPublicJobPage {
   url: string;
   title: string;
   company: string;
   location: string;
   description: string;
-  employmentType?: string | null;
-  postedAt?: string | null;
-  validThrough?: string | null;
-  jobLocationType?: string | null;
-  applicantLocationRequirements?: string | null;
+  employmentType: string | null;
+  postedAt: string | null;
+  validThrough: string | null;
+  jobLocationType: string | null;
+  applicantLocationRequirements: string | null;
 }
 
 export interface WebDiscoverySession {
-  search(query: string, page: number): Promise<string[]>;
+  search(query: string, pageNumber: number): Promise<string[]>;
   detail(url: string): Promise<PublicJobPage | null>;
 }
 
@@ -104,12 +119,26 @@ function isAllowedDetailPath(url: URL): boolean {
   const isLinkedIn =
     hostname === "linkedin.com" || hostname.endsWith(".linkedin.com");
 
-  if (hostname === "jobs.lever.co") return segments.length >= 2;
+  const finalSegment = segments.at(-1) || "";
+  const isGenericFinal = /^(?:jobs?|careers?|positions?|openings?|vacancies?)$/i.test(
+    finalSegment,
+  );
+  const isListFinal = /-(?:jobs|careers|positions|openings|vacancies)$/i.test(
+    finalSegment,
+  );
+  if (hostname === "jobs.lever.co") {
+    return segments.length >= 2 && !isGenericFinal && !isListFinal;
+  }
   if (
     hostname === "boards.greenhouse.io" ||
     hostname === "job-boards.greenhouse.io"
   ) {
-    return segments.length >= 3 && segments[1]?.toLowerCase() === "jobs";
+    return (
+      segments.length >= 3 &&
+      segments[1]?.toLowerCase() === "jobs" &&
+      !isGenericFinal &&
+      !isListFinal
+    );
   }
   if (isLinkedIn) {
     return (
@@ -122,10 +151,31 @@ function isAllowedDetailPath(url: URL): boolean {
   if (segments.some((segment) => /^(?:blog|guide|resources?|search|category|tag)$/i.test(segment))) {
     return false;
   }
+  if (
+    isGenericFinal ||
+    isListFinal ||
+    /(?:^|-)(?:jobs?|careers?|positions?|openings?|vacancies?)-(?:in|at|for)(?:-|$)/i.test(
+      finalSegment,
+    ) ||
+    /^(?:best|top)-.*-(?:jobs?|careers?|positions?|openings?|vacancies?)$/i.test(
+      finalSegment,
+    )
+  ) {
+    return false;
+  }
   const detailIndex = segments.findIndex((segment) =>
     /^(?:jobs?|careers?|positions?|openings?|vacancies?)$/i.test(segment),
   );
   return detailIndex >= 0 && detailIndex < segments.length - 1;
+}
+
+function isSearchEngineHostname(hostname: string): boolean {
+  return (
+    /^(?:www\.)?google\.[a-z.]+$/i.test(hostname) ||
+    /(?:^|\.)(?:bing\.com|search\.yahoo\.com|duckduckgo\.com|ecosia\.org)$/i.test(
+      hostname,
+    )
+  );
 }
 
 export function sanitizeGoogleResultUrl(value: string): string | null {
@@ -137,8 +187,7 @@ export function sanitizeGoogleResultUrl(value: string): string | null {
       url.username ||
       url.password ||
       url.port ||
-      hostname === "google.com" ||
-      hostname.endsWith(".google.com") ||
+      isSearchEngineHostname(hostname) ||
       !isAllowedDetailPath(url)
     ) {
       return null;
@@ -163,7 +212,7 @@ function tagsFromTitle(title: string): string[] {
   return tags;
 }
 
-function remoteFromPage(page: PublicJobPage): true | null {
+function remoteFromPage(page: NormalizedPublicJobPage): true | null {
   const evidence = [
     page.jobLocationType,
     page.applicantLocationRequirements,
@@ -180,23 +229,80 @@ function remoteFromPage(page: PublicJobPage): true | null {
     : null;
 }
 
-export function mapPublicJobPage(page: PublicJobPage): SourceJob {
-  const url = sanitizeGoogleResultUrl(page.url);
-  if (!url) throw new Error("Invalid public job detail URL");
+export function mapPublicJobPage(
+  page: PublicJobPage,
+  now = new Date(),
+): SourceJob | null {
+  const url =
+    (page.canonicalUrl
+      ? sanitizeGoogleResultUrl(page.canonicalUrl)
+      : null) || sanitizeGoogleResultUrl(page.url);
+  if (!url) return null;
+  const pageStatus = classifyPageStatus(
+    { status: page.status, url: page.url, text: page.text },
+    now,
+  );
+  if (
+    pageStatus === "inactive" ||
+    pageStatus === "blocked" ||
+    pageStatus === "login-required"
+  ) {
+    return null;
+  }
+
+  const postings = page.jsonLd.flatMap(jobPostingNodes);
+  let normalized: NormalizedPublicJobPage | null = null;
+  let foundExpiredPosting = false;
+  for (const posting of postings) {
+    const validThrough = textValue(posting.validThrough) || null;
+    const status = classifyPageStatus(
+      { status: page.status, url: page.url, text: page.text, validThrough },
+      now,
+    );
+    if (status === "inactive") {
+      foundExpiredPosting = true;
+      continue;
+    }
+    normalized = postingToPage(posting, url);
+    if (normalized) break;
+  }
+  if (!normalized && foundExpiredPosting) return null;
+
+  if (!normalized) {
+    const title = page.title?.trim() || "";
+    const company = page.company?.trim() || "";
+    const location = page.location?.trim() || "";
+    const description =
+      page.description?.trim() || page.metaDescription?.trim() || page.text.trim();
+    if (!title || !company || !location || !description) return null;
+    normalized = {
+      url,
+      title,
+      company,
+      location,
+      description,
+      employmentType: page.employmentType?.trim() || null,
+      postedAt: page.postedAt?.trim() || null,
+      validThrough: null,
+      jobLocationType: null,
+      applicantLocationRequirements: null,
+    };
+  }
+
   return {
     source: "Web discovery",
     externalId: createHash("sha256").update(url).digest("hex"),
     sourceUrl: url,
     originalUrl: url,
-    title: page.title,
-    company: page.company,
-    location: page.location,
+    title: normalized.title,
+    company: normalized.company,
+    location: normalized.location,
     country: null,
-    description: page.description,
-    engagementType: page.employmentType || null,
-    remote: remoteFromPage(page),
-    tags: tagsFromTitle(page.title),
-    postedAt: page.postedAt || null,
+    description: normalized.description,
+    engagementType: normalized.employmentType,
+    remote: remoteFromPage(normalized),
+    tags: tagsFromTitle(normalized.title),
+    postedAt: normalized.postedAt,
   };
 }
 
@@ -274,13 +380,16 @@ function locationFromPosting(posting: Record<string, unknown>): string {
     const direct = textValue(location);
     if (direct) return direct;
   }
-  return textValue(posting.applicantLocationRequirements);
+  const applicantLocations = Array.isArray(posting.applicantLocationRequirements)
+    ? posting.applicantLocationRequirements
+    : [posting.applicantLocationRequirements];
+  return applicantLocations.map(textValue).filter(Boolean).join(", ");
 }
 
 function postingToPage(
   posting: Record<string, unknown>,
   url: string,
-): PublicJobPage | null {
+): NormalizedPublicJobPage | null {
   const title = textValue(posting.title) || textValue(posting.name);
   const company = textValue(posting.hiringOrganization);
   const location = locationFromPosting(posting);
@@ -403,11 +512,11 @@ class PlaywrightWebDiscoverySession implements WebDiscoverySession {
     };
   }
 
-  async search(query: string, page: number): Promise<string[]> {
+  async search(query: string, pageNumber: number): Promise<string[]> {
     const url = new URL("https://www.google.com/search");
     url.searchParams.set("q", query);
     url.searchParams.set("filter", "0");
-    url.searchParams.set("start", String(page * 10));
+    url.searchParams.set("start", String((Math.max(1, pageNumber) - 1) * 10));
     const httpStatus = await this.navigate(url.toString());
     const deadline = this.now() + this.searchReadyTimeoutMs;
 
@@ -428,8 +537,18 @@ class PlaywrightWebDiscoverySession implements WebDiscoverySession {
         }
         return results;
       }
-      if (/\b(?:your search did not match any documents|no results found)\b/i.test(snapshot.text)) {
-        return [];
+      const noResults = this.page.locator(
+        '#topstuff [role="heading"], #botstuff .card-section, [data-attrid="No results"]',
+      );
+      if ((await noResults.count()) > 0) {
+        const noResultsText = await noResults.first().innerText();
+        if (
+          /\b(?:your search did not match any documents|no results found)\b/i.test(
+            noResultsText,
+          )
+        ) {
+          return [];
+        }
       }
       const remaining = deadline - this.now();
       if (remaining <= 0) {
@@ -439,26 +558,34 @@ class PlaywrightWebDiscoverySession implements WebDiscoverySession {
     }
   }
 
-  private async jsonLdPages(url: string): Promise<PublicJobPage[]> {
+  private async readJsonLd(): Promise<unknown[]> {
     const scripts = this.page.locator('script[type="application/ld+json"]');
-    const pages: PublicJobPage[] = [];
+    const values: unknown[] = [];
     for (let index = 0; index < (await scripts.count()); index += 1) {
       const text = await scripts.nth(index).textContent();
       if (!text) continue;
       try {
-        for (const posting of jobPostingNodes(JSON.parse(text))) {
-          const page = postingToPage(posting, url);
-          if (page) pages.push(page);
-        }
+        values.push(JSON.parse(text));
       } catch {
         // Ignore malformed unrelated JSON-LD while readiness remains bounded.
       }
     }
-    return pages;
+    return values;
   }
 
-  private async fallbackPage(url: string, status: PageStatus): Promise<PublicJobPage | null> {
-    if (status !== "active") return null;
+  private async rawFallbackFields(): Promise<
+    Pick<
+      PublicJobPage,
+      | "title"
+      | "company"
+      | "location"
+      | "description"
+      | "employmentType"
+      | "postedAt"
+      | "metaDescription"
+      | "canonicalUrl"
+    >
+  > {
     const title =
       (await firstText(this.page, ["h1", '[itemprop="title"]', "title"])) ||
       (await firstAttribute(
@@ -485,17 +612,26 @@ class PlaywrightWebDiscoverySession implements WebDiscoverySession {
         "datetime",
       )) ||
       (await firstText(this.page, ['[itemprop="datePosted"]']));
-    return title && company && location && description
-      ? {
-          url,
-          title,
-          company,
-          location,
-          description,
-          employmentType: employmentType || null,
-          postedAt: postedAt || null,
-        }
-      : null;
+    const metaDescription = await firstAttribute(
+      this.page,
+      ['meta[name="description"], meta[property="og:description"]'],
+      "content",
+    );
+    const canonicalUrl = await firstAttribute(
+      this.page,
+      ['link[rel="canonical"]'],
+      "href",
+    );
+    return {
+      title: title || null,
+      company: company || null,
+      location: location || null,
+      description: description || null,
+      employmentType: employmentType || null,
+      postedAt: postedAt || null,
+      metaDescription: metaDescription || null,
+      canonicalUrl: canonicalUrl || null,
+    };
   }
 
   async detail(value: string): Promise<PublicJobPage | null> {
@@ -504,18 +640,32 @@ class PlaywrightWebDiscoverySession implements WebDiscoverySession {
 
     while (true) {
       const initial = await this.snapshot(httpStatus);
-      if (initial.status === "inactive") return null;
-      this.assertPage(initial.status, httpStatus, initial.text, "detail");
-      const finalUrl = sanitizeGoogleResultUrl(this.page.url()) || value;
-      const pages = await this.jsonLdPages(finalUrl);
-      for (const page of pages) {
-        const classified = await this.snapshot(httpStatus, page.validThrough);
-        if (classified.status === "inactive") return null;
-        this.assertPage(classified.status, httpStatus, classified.text, "detail");
-        return page;
+      if (initial.status !== "inactive") {
+        this.assertPage(initial.status, httpStatus, initial.text, "detail");
       }
-      const fallback = await this.fallbackPage(finalUrl, initial.status);
-      if (fallback) return fallback;
+      const finalUrl = sanitizeGoogleResultUrl(this.page.url());
+      if (!finalUrl) {
+        throw new Error(`${ERROR_PREFIX} Unsafe redirected job detail URL`);
+      }
+      const jsonLd = await this.readJsonLd();
+      const fallback = await this.rawFallbackFields();
+      const raw: PublicJobPage = {
+        status: httpStatus,
+        url: finalUrl,
+        text: initial.text,
+        jsonLd,
+        ...fallback,
+      };
+      const hasJobPosting = jsonLd.flatMap(jobPostingNodes).length > 0;
+      const hasFallback = Boolean(
+        fallback.title &&
+          fallback.company &&
+          fallback.location &&
+          (fallback.description || fallback.metaDescription || initial.text),
+      );
+      if (initial.status === "inactive" || hasJobPosting || hasFallback) {
+        return raw;
+      }
       const remaining = deadline - this.now();
       if (remaining <= 0) {
         throw new Error(`${ERROR_PREFIX} Web detail readiness timed out`);
@@ -602,9 +752,13 @@ export class WebDiscoveryConnector implements JobConnector {
         const urls = new Map<string, string>();
 
         for (const query of queries) {
-          for (let page = 0; page < this.config.googleMaxPages; page += 1) {
+          for (
+            let pageNumber = 1;
+            pageNumber <= this.config.googleMaxPages;
+            pageNumber += 1
+          ) {
             if (urls.size >= MAX_DETAILS) break;
-            const results = await session.search(query, page);
+            const results = await session.search(query, pageNumber);
             for (const result of results) {
               const url = sanitizeGoogleResultUrl(result);
               if (url && !urls.has(url)) urls.set(url, url);
@@ -618,7 +772,10 @@ export class WebDiscoveryConnector implements JobConnector {
         const mapped: SourceJob[] = [];
         for (const url of urls.values()) {
           const detail = await session.detail(url);
-          if (detail) mapped.push(mapPublicJobPage(detail));
+          if (detail) {
+            const job = mapPublicJobPage(detail);
+            if (job) mapped.push(job);
+          }
         }
         return mapped;
       });
