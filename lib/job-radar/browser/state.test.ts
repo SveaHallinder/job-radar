@@ -76,6 +76,19 @@ describe("BrowserStateStore", () => {
     expect(await findTemporaryArtifacts(path)).toEqual([]);
   });
 
+  it("enforces mode 0600 under a restrictive process umask", async () => {
+    const path = join(directory, "state.json");
+    const previousUmask = process.umask(0o277);
+
+    try {
+      await new BrowserStateStore(path).save({ ...EMPTY_BROWSER_STATE });
+    } finally {
+      process.umask(previousUmask);
+    }
+
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
+  });
+
   it("does not reuse a predictable stale temp file", async () => {
     const path = join(directory, "state.json");
     const temporaryPath = `${path}.tmp`;

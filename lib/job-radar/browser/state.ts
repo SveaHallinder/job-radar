@@ -67,6 +67,7 @@ async function writeAndClose(handle: FileHandle, contents: string): Promise<void
   let operationFailed = false;
 
   try {
+    await handle.chmod(0o600);
     await handle.writeFile(contents, "utf8");
   } catch (error) {
     operationError = error;
