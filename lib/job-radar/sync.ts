@@ -1,0 +1,173 @@
+import { getConnectorConfiguration } from "./connectors";
+import { getJobRepository } from "./db";
+import { resolveRedirect } from "./fetch";
+import { canonicalizeUrl, matchJob } from "./matcher";
+import type {
+  JobConnector,
+  JobRepository,
+  MatchedJob,
+  SourceJob,
+  SourceResult,
+  SyncSummary,
+} from "./types";
+
+interface SyncOptions {
+  connectors?: JobConnector[];
+  skippedSources?: string[];
+  repository?: JobRepository;
+  clock?: () => Date;
+  resolveUrl?: (url: string) => Promise<string>;
+}
+
+interface FetchedSource {
+  connector: JobConnector;
+  jobs: SourceJob[];
+  error?: Error;
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : "Unknown source error";
+}
+
+function duplicateKey(job: SourceJob): string {
+  return `${job.company}|${job.title}`
+    .toLocaleLowerCase("en")
+    .normalize("NFKD")
+    .replace(/[^a-z0-9|]+/g, " ")
+    .trim();
+}
+
+function needsRedirectResolution(job: SourceJob): boolean {
+  return job.source === "Arbeitnow" || job.source === "Jooble";
+}
+
+export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> {
+  const clock = options.clock ?? (() => new Date());
+  const repository = options.repository ?? getJobRepository();
+  const resolveUrl = options.resolveUrl ?? resolveRedirect;
+  const configured = options.connectors
+    ? { connectors: options.connectors, skippedSources: options.skippedSources ?? [] }
+    : getConnectorConfiguration();
+  const startedAt = clock().toISOString();
+  const runId = repository.startSyncRun(startedAt);
+
+  const fetchedSources: FetchedSource[] = await Promise.all(
+    configured.connectors.map(async (connector) => {
+      try {
+        return { connector, jobs: await connector.fetchJobs() };
+      } catch (error) {
+        console.error(`[job radar] ${connector.name} sync failed`, error);
+        return {
+          connector,
+          jobs: [],
+          error: error instanceof Error ? error : new Error(errorMessage(error)),
+        };
+      }
+    }),
+  );
+
+  const sourceResults: SourceResult[] = [];
+  const sourceErrors: string[] = [];
+  const acceptedJobs: MatchedJob[] = [];
+  const canonicalUrls = new Set<string>();
+  const companyTitles = new Set<string>();
+  let fetched = 0;
+  let rejected = 0;
+
+  for (const source of fetchedSources) {
+    if (source.error) {
+      const message = `${source.connector.name}: ${errorMessage(source.error).replace(/^\[job radar\]\s*/, "")}`;
+      sourceErrors.push(message);
+      sourceResults.push({
+        source: source.connector.name,
+        status: "failed",
+        fetched: 0,
+        accepted: 0,
+        rejected: 0,
+        message,
+      });
+      continue;
+    }
+
+    fetched += source.jobs.length;
+    const sourceResult: SourceResult = {
+      source: source.connector.name,
+      status: "success",
+      fetched: source.jobs.length,
+      accepted: 0,
+      rejected: 0,
+    };
+
+    for (const job of source.jobs) {
+      const match = matchJob(job);
+      if (!match.matched) {
+        rejected += 1;
+        sourceResult.rejected += 1;
+        continue;
+      }
+
+      const resolvedUrl = needsRedirectResolution(job)
+        ? await resolveUrl(job.originalUrl)
+        : job.originalUrl;
+      const canonicalUrl = canonicalizeUrl(resolvedUrl);
+      const fallbackKey = duplicateKey(job);
+
+      if (canonicalUrls.has(canonicalUrl) || companyTitles.has(fallbackKey)) {
+        continue;
+      }
+
+      canonicalUrls.add(canonicalUrl);
+      companyTitles.add(fallbackKey);
+      sourceResult.accepted += 1;
+      acceptedJobs.push({
+        ...job,
+        originalUrl: resolvedUrl,
+        canonicalUrl,
+        category: match.category,
+        normalizedEngagementType: match.engagementType,
+        matchReasons: match.matchReasons,
+      });
+    }
+
+    sourceResults.push(sourceResult);
+  }
+
+  for (const skippedSource of configured.skippedSources) {
+    sourceResults.push({
+      source: skippedSource.split(" · ")[0],
+      status: "skipped",
+      fetched: 0,
+      accepted: 0,
+      rejected: 0,
+      message: skippedSource,
+    });
+  }
+
+  let newJobs = 0;
+  let updatedJobs = 0;
+  for (const job of acceptedJobs) {
+    const result = repository.upsertJob(job, startedAt);
+    if (result === "created") newJobs += 1;
+    else updatedJobs += 1;
+  }
+
+  const failedSources = fetchedSources.filter((source) => source.error).length;
+  const successfulSources = fetchedSources.length - failedSources;
+  const status = failedSources === 0 ? "success" : successfulSources > 0 ? "partial" : "failed";
+  const summary: SyncSummary = {
+    runId,
+    status,
+    startedAt,
+    completedAt: clock().toISOString(),
+    fetched,
+    accepted: acceptedJobs.length,
+    rejected,
+    newJobs,
+    updatedJobs,
+    sourceResults,
+    sourceErrors,
+  };
+
+  repository.finishSyncRun(summary);
+  return summary;
+}
