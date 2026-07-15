@@ -588,6 +588,45 @@ describe("PlaywrightLinkedInBrowserPort", () => {
   });
 
   it.each([
+    [
+      "login",
+      "Join LinkedIn or sign in",
+      "[job radar linkedin] LinkedIn login required",
+    ],
+    [
+      "challenge",
+      "Complete the CAPTCHA challenge",
+      "[job radar linkedin] LinkedIn blocked browser discovery",
+    ],
+    [
+      "account restriction",
+      "Your LinkedIn account is temporarily restricted",
+      "[job radar linkedin] LinkedIn blocked browser discovery",
+    ],
+  ])(
+    "reclassifies a delayed search %s while waiting for results",
+    async (_case, body, expectedError) => {
+      const page = new FakePage();
+      const searchUrl =
+        "https://www.linkedin.com/jobs/search/?keywords=delayed-status";
+      page.bodies.set(searchUrl, "Search results loading");
+      let now = 0;
+      const { port } = createProductionPort(page, {
+        now: () => now,
+        searchReadyTimeoutMs: 1_000,
+        wait: async (milliseconds) => {
+          now += milliseconds;
+          page.bodies.set(searchUrl, body);
+        },
+      });
+
+      await expect(
+        port.run((session) => session.search(searchUrl, 1)),
+      ).rejects.toThrow(expectedError);
+    },
+  );
+
+  it.each([
     ["HTTP 500", 500, "Server error"],
     ["unknown readiness timeout", 200, "Please wait"],
   ])("does not advance state after %s during search", async (_case, status, body) => {
@@ -791,8 +830,14 @@ describe("PlaywrightLinkedInBrowserPort", () => {
     const page = new FakePage();
     const target = reference("21");
     page.bodies.set(target.url, "Loading job");
-    const delayedNodes: Record<string, FakeDomNode[]> = {};
-    page.nodes.set(target.url, delayedNodes);
+    const delayedTitle: FakeDomNode = { text: "  " };
+    const delayedCompany: FakeDomNode = { text: "\n" };
+    const delayedDescription: FakeDomNode = { text: "\t" };
+    page.nodes.set(target.url, {
+      ".jobs-unified-top-card__job-title": [delayedTitle],
+      ".jobs-unified-top-card__company-name": [delayedCompany],
+      ".jobs-box__html-content": [delayedDescription],
+    });
     let now = 0;
     const waits: number[] = [];
     const { port } = createProductionPort(page, {
@@ -801,15 +846,9 @@ describe("PlaywrightLinkedInBrowserPort", () => {
       wait: async (milliseconds) => {
         now += milliseconds;
         waits.push(milliseconds);
-        delayedNodes[".jobs-unified-top-card__job-title"] = [
-          { text: "Delayed Sales Lead" },
-        ];
-        delayedNodes[".jobs-unified-top-card__company-name"] = [
-          { text: "Acme AB" },
-        ];
-        delayedNodes[".jobs-box__html-content"] = [
-          { text: "Delayed contract role." },
-        ];
+        delayedTitle.text = "Delayed Sales Lead";
+        delayedCompany.text = "Acme AB";
+        delayedDescription.text = "Delayed contract role.";
       },
     });
 
@@ -856,7 +895,7 @@ describe("PlaywrightLinkedInBrowserPort", () => {
     },
   );
 
-  it("does not advance state after detail readiness times out", async () => {
+  it("does not advance state when mounted detail fields stay empty", async () => {
     const page = new FakePage();
     page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
     const savedSearch =
@@ -877,6 +916,11 @@ describe("PlaywrightLinkedInBrowserPort", () => {
       ],
     });
     page.bodies.set(target.url, "Loading job");
+    page.nodes.set(target.url, {
+      ".jobs-unified-top-card__job-title": [{ text: " " }],
+      ".jobs-unified-top-card__company-name": [{ text: "\n" }],
+      ".jobs-box__html-content": [{ text: "\t" }],
+    });
     let now = 0;
     const { port } = createProductionPort(page, {
       detailReadyTimeoutMs: 500,

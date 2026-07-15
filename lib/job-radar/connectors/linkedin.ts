@@ -258,16 +258,6 @@ async function firstText(
   return "";
 }
 
-async function hasAnySelector(
-  page: LinkedInPagePort,
-  selectors: readonly string[],
-): Promise<boolean> {
-  for (const selector of selectors) {
-    if ((await page.locator(selector).count()) > 0) return true;
-  }
-  return false;
-}
-
 async function firstAttribute(
   page: LinkedInPagePort,
   selectors: readonly string[],
@@ -344,12 +334,17 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     }
   }
 
-  private async waitForSearchReady(): Promise<LinkedInLocatorPort> {
+  private async waitForSearchReady(
+    httpStatus: number | null,
+  ): Promise<LinkedInLocatorPort> {
     const cards = this.page.locator(CARD_SELECTOR);
     const noResults = this.page.locator(NO_RESULTS_SELECTOR);
     const deadline = this.now() + this.searchReadyTimeoutMs;
 
     while (true) {
+      const status = await this.currentStatus(httpStatus);
+      this.assertAccessible(status, "search");
+      this.assertHttpStatus(httpStatus, "search");
       if ((await cards.count()) > 0) return cards;
       if ((await noResults.count()) > 0) return cards;
       const remaining = deadline - this.now();
@@ -362,26 +357,30 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
 
   private async waitForDetailReady(
     httpStatus: number | null,
-  ): Promise<"ready" | "inactive"> {
+    reference: LinkedInJobReference,
+  ): Promise<{
+    title: string;
+    company: string;
+    description: string;
+  } | null> {
     const deadline = this.now() + this.detailReadyTimeoutMs;
 
     while (true) {
       const status = await this.currentStatus(httpStatus);
-      if (status === "inactive") return "inactive";
+      if (status === "inactive") return null;
       this.assertAccessible(status, "detail");
       this.assertHttpStatus(httpStatus, "detail");
 
-      if (
-        (await hasAnySelector(this.page, TITLE_SELECTORS)) &&
-        (await hasAnySelector(this.page, COMPANY_SELECTORS)) &&
-        (await hasAnySelector(this.page, DESCRIPTION_SELECTORS))
-      ) {
-        return "ready";
-      }
+      const title = await firstText(this.page, TITLE_SELECTORS);
+      const company = await firstText(this.page, COMPANY_SELECTORS);
+      const description = await firstText(this.page, DESCRIPTION_SELECTORS);
+      if (title && company && description) return { title, company, description };
 
       const remaining = deadline - this.now();
       if (remaining <= 0) {
-        throw new Error(`${ERROR_PREFIX} LinkedIn detail readiness timed out`);
+        throw new Error(
+          `${ERROR_PREFIX} LinkedIn detail readiness timed out for ${jobLogLabel(reference)}`,
+        );
       }
       await this.wait(Math.min(250, remaining));
     }
@@ -425,7 +424,7 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     this.assertAccessible(navigation.pageStatus, "search");
     this.assertHttpStatus(navigation.httpStatus, "search");
 
-    const cards = await this.waitForSearchReady();
+    const cards = await this.waitForSearchReady(navigation.httpStatus);
     const count = Math.min(await cards.count(), Math.max(limit, limit * 3));
     const references: LinkedInJobReference[] = [];
     const seen = new Set<string>();
@@ -460,17 +459,12 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     if (this.detailNavigationCompleted) await this.wait(1_500);
     const navigation = await this.navigate(reference.url);
     this.detailNavigationCompleted = true;
-    const readiness = await this.waitForDetailReady(navigation.httpStatus);
-    if (readiness === "inactive") return null;
-
-    const title = await firstText(this.page, TITLE_SELECTORS);
-    const company = await firstText(this.page, COMPANY_SELECTORS);
-    const description = await firstText(this.page, DESCRIPTION_SELECTORS);
-    if (!title || !company || !description) {
-      throw new Error(
-        `${ERROR_PREFIX} LinkedIn detail parser failed for ${jobLogLabel(reference)}`,
-      );
-    }
+    const detail = await this.waitForDetailReady(
+      navigation.httpStatus,
+      reference,
+    );
+    if (!detail) return null;
+    const { title, company, description } = detail;
 
     const location =
       (await firstText(this.page, LOCATION_SELECTORS)) ||
