@@ -81,6 +81,8 @@ export interface JobRepository {
   startSyncRun(startedAt: string): string;
   upsertJob(job: MatchedJob, seenAt: string): "created" | "updated";
   deleteJobBySourceId(source: string, externalId: string): void;
+  listJobsForValidation(sources: string[], afterId: string | null, limit: number): StoredJob[];
+  deleteJobById(id: string): void;
   finishSyncRun(summary: SyncSummary): void;
   listJobs(): StoredJob[];
   getDashboardStats(): DashboardStats;

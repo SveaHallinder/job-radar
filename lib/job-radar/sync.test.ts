@@ -28,6 +28,14 @@ class MemoryRepository implements JobRepository {
     this.deleted.push(`${source}:${externalId}`);
   }
 
+  listJobsForValidation(): StoredJob[] {
+    return [];
+  }
+
+  deleteJobById(id: string): void {
+    this.deleted.push(id);
+  }
+
   finishSyncRun(summary: SyncSummary): void {
     this.summary = summary;
   }
@@ -166,6 +174,69 @@ describe("syncJobs", () => {
       (result) => result.source === "LinkedIn",
     );
     expect(linkedin).toMatchObject({ status: "skipped" });
+  });
+
+  it("runs the active validator after upserts and records its result", async () => {
+    const repository = new MemoryRepository();
+    const summary = await syncJobs({
+      connectors: [{ name: "API", fetchJobs: async () => [] }],
+      activeValidator: async () => ({ checked: 4, deleted: 1, unknown: 1 }),
+      repository,
+      clock: () => new Date("2026-07-15T10:00:00.000Z"),
+      resolveUrl: async (url) => url,
+    });
+
+    const validation = summary.sourceResults.find(
+      (result) => result.source === "Active validation",
+    );
+    expect(validation).toMatchObject({
+      status: "success",
+      fetched: 4,
+      accepted: 3,
+      rejected: 1,
+    });
+  });
+
+  it("marks the run partial when the active validator fails but preserves jobs", async () => {
+    const repository = new MemoryRepository();
+    const summary = await syncJobs({
+      connectors: [{ name: "API", fetchJobs: async () => [matchingJob] }],
+      activeValidator: async () => {
+        throw new Error("browser crashed");
+      },
+      repository,
+      clock: () => new Date("2026-07-15T10:00:00.000Z"),
+      resolveUrl: async (url) => url,
+    });
+
+    expect(summary.status).toBe("partial");
+    expect(
+      summary.sourceErrors.some((message) =>
+        message.includes("Active validation failed"),
+      ),
+    ).toBe(true);
+    expect(repository.saved).toHaveLength(1);
+  });
+
+  it("does not run the active validator when browserDiscovery is off", async () => {
+    const repository = new MemoryRepository();
+    let validatorCalled = false;
+    const summary = await syncJobs({
+      browserDiscovery: false,
+      connectors: [{ name: "API", fetchJobs: async () => [] }],
+      activeValidator: async () => {
+        validatorCalled = true;
+        return { checked: 0, deleted: 0, unknown: 0 };
+      },
+      repository,
+      clock: () => new Date("2026-07-15T10:00:00.000Z"),
+      resolveUrl: async (url) => url,
+    });
+
+    expect(validatorCalled).toBe(false);
+    expect(
+      summary.sourceResults.some((result) => result.source === "Active validation"),
+    ).toBe(false);
   });
 
   it("stores duplicate source records only once", async () => {

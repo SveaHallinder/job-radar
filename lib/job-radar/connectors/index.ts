@@ -1,4 +1,9 @@
+import {
+  validateActiveJobs,
+  type ActiveValidator,
+} from "../active-validation";
 import { getBrowserDiscoveryConfig } from "../browser/config";
+import type { PageSnapshot } from "../browser/page-status";
 import { BrowserRuntime } from "../browser/runtime";
 import { BrowserStateStore } from "../browser/state";
 import type { JobConnector } from "../types";
@@ -27,6 +32,7 @@ function parseNamedFeeds(value: string | undefined): Array<[string, string]> {
 export interface ConnectorConfiguration {
   connectors: JobConnector[];
   skippedSources: string[];
+  activeValidator?: ActiveValidator;
 }
 
 export function getConnectorConfiguration(
@@ -50,6 +56,7 @@ export function getConnectorConfiguration(
   }
 
   const browserConfig = getBrowserDiscoveryConfig(env);
+  let activeValidator: ActiveValidator | undefined;
   if (!browserConfig.enabled) {
     skippedSources.push("LinkedIn · browser discovery disabled");
     skippedSources.push("Web discovery · browser discovery disabled");
@@ -61,7 +68,23 @@ export function getConnectorConfiguration(
     const runtime = new BrowserRuntime(browserConfig.profilePath);
     connectors.push(createLinkedInConnector(browserConfig, { runtime, state }));
     connectors.push(createWebDiscoveryConnector(browserConfig, { runtime, state }));
+
+    // Reuse one visible session and page for the whole validation batch,
+    // pacing navigations to avoid hammering any single host.
+    activeValidator = (repository) =>
+      runtime.run(async (context) => {
+        const page = await context.newPage();
+        let navigated = false;
+        const loadPage = async (url: string): Promise<PageSnapshot> => {
+          if (navigated) await page.waitForTimeout(1_500);
+          navigated = true;
+          const response = await page.goto(url, { waitUntil: "domcontentloaded" });
+          const text = await page.locator("body").innerText();
+          return { status: response?.status() ?? null, url: page.url(), text };
+        };
+        return validateActiveJobs(repository, state, loadPage);
+      });
   }
 
-  return { connectors, skippedSources };
+  return { connectors, skippedSources, activeValidator };
 }

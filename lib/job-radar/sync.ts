@@ -1,3 +1,4 @@
+import type { ActiveValidator } from "./active-validation";
 import { getConnectorConfiguration } from "./connectors";
 import { getJobRepository } from "./db";
 import { resolveRedirect } from "./fetch";
@@ -18,6 +19,7 @@ interface SyncOptions {
   clock?: () => Date;
   resolveUrl?: (url: string) => Promise<string>;
   browserDiscovery?: boolean;
+  activeValidator?: ActiveValidator;
 }
 
 interface FetchedSource {
@@ -61,8 +63,15 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
   const resolveUrl = options.resolveUrl ?? resolveRedirect;
   const browserDiscovery = options.browserDiscovery ?? true;
   const configured = options.connectors
-    ? { connectors: options.connectors, skippedSources: options.skippedSources ?? [] }
+    ? {
+        connectors: options.connectors,
+        skippedSources: options.skippedSources ?? [],
+        activeValidator: options.activeValidator,
+      }
     : getConnectorConfiguration();
+  const activeValidator = browserDiscovery
+    ? (options.activeValidator ?? configured.activeValidator)
+    : undefined;
   const startedAt = clock().toISOString();
   const runId = repository.startSyncRun(startedAt);
 
@@ -176,8 +185,35 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
     else updatedJobs += 1;
   }
 
-  const failedSources = fetchedSources.filter((source) => source.error).length;
-  const successfulSources = fetchedSources.length - failedSources;
+  if (activeValidator) {
+    try {
+      const result = await activeValidator(repository);
+      sourceResults.push({
+        source: "Active validation",
+        status: "success",
+        fetched: result.checked,
+        accepted: result.checked - result.deleted,
+        rejected: result.deleted,
+        message: `${result.deleted} inactive jobs removed; ${result.unknown} ambiguous jobs preserved`,
+      });
+    } catch (error) {
+      const message = `[job radar browser] Active validation failed: ${errorMessage(error)}`;
+      sourceErrors.push(message);
+      sourceResults.push({
+        source: "Active validation",
+        status: "failed",
+        fetched: 0,
+        accepted: 0,
+        rejected: 0,
+        message,
+      });
+    }
+  }
+
+  // Final status reflects every non-skipped source, including active validation.
+  const gradedResults = sourceResults.filter((result) => result.status !== "skipped");
+  const failedSources = gradedResults.filter((result) => result.status === "failed").length;
+  const successfulSources = gradedResults.length - failedSources;
   const status = failedSources === 0 ? "success" : successfulSources > 0 ? "partial" : "failed";
   const summary: SyncSummary = {
     runId,

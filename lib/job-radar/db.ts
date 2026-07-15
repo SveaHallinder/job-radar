@@ -231,6 +231,29 @@ export class SqliteJobRepository implements JobRepository {
       .run(source, externalId);
   }
 
+  listJobsForValidation(
+    sources: string[],
+    afterId: string | null,
+    limit: number,
+  ): StoredJob[] {
+    if (sources.length === 0) return [];
+    const placeholders = sources.map(() => "?").join(", ");
+    const cursorClause = afterId ? " AND id > ?" : "";
+    const params: (string | number)[] = [...sources];
+    if (afterId) params.push(afterId);
+    params.push(limit);
+    const rows = this.database
+      .prepare(
+        `SELECT * FROM jobs WHERE source IN (${placeholders})${cursorClause} ORDER BY id ASC LIMIT ?`,
+      )
+      .all(...params) as JobRow[];
+    return rows.map(mapJobRow);
+  }
+
+  deleteJobById(id: string): void {
+    this.database.prepare("DELETE FROM jobs WHERE id = ?").run(id);
+  }
+
   finishSyncRun(summary: SyncSummary): void {
     this.database
       .prepare(`
