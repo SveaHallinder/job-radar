@@ -1,4 +1,12 @@
-import { access, mkdtemp, readFile, rm, stat, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdtemp,
+  readFile,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
@@ -50,6 +58,17 @@ describe("BrowserStateStore", () => {
     );
     expect((await stat(path)).mode & 0o777).toBe(0o600);
     await expect(access(`${path}.tmp`)).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("replaces a stale temp file with mode 0600 state", async () => {
+    const path = join(directory, "state.json");
+    const temporaryPath = `${path}.tmp`;
+    await writeFile(temporaryPath, "stale", { mode: 0o644 });
+    await chmod(temporaryPath, 0o644);
+
+    await new BrowserStateStore(path).save({ ...EMPTY_BROWSER_STATE });
+
+    expect((await stat(path)).mode & 0o777).toBe(0o600);
   });
 
   it("wraps corrupt JSON with a browser state read error", async () => {

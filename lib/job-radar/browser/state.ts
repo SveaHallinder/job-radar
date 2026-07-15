@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 
 const ERROR_PREFIX = "[job radar browser]";
@@ -95,6 +95,7 @@ export class BrowserStateStore {
         encoding: "utf8",
         mode: 0o600,
       });
+      await chmod(temporaryPath, 0o600);
       await rename(temporaryPath, this.path);
     } catch (error) {
       throw new Error(`${ERROR_PREFIX} Could not save browser state`, {
