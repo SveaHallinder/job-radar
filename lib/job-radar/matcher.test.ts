@@ -1,0 +1,117 @@
+import { describe, expect, it } from "vitest";
+
+import { canonicalizeUrl, matchJob } from "./matcher";
+
+const baseJob = {
+  source: "Fixture",
+  externalId: "job-1",
+  sourceUrl: "https://source.example/jobs/job-1",
+  originalUrl: "https://jobs.example.com/job-1",
+  title: "Freelance Marketing Consultant",
+  company: "Northstar AB",
+  location: "Stockholm, Sweden",
+  country: "Sweden",
+  description:
+    "This six-month freelance contract is fully remote. Applicants in Sweden and EMEA are welcome.",
+  engagementType: "Contract",
+  remote: true,
+  tags: ["Marketing", "Freelance"],
+  postedAt: "2026-07-15T08:00:00.000Z",
+};
+
+describe("matchJob", () => {
+  it("accepts a remote contract marketing role available in Sweden", () => {
+    expect(matchJob(baseJob)).toMatchObject({
+      matched: true,
+      category: "Marketing",
+      engagementType: "Contract",
+      matchReasons: expect.arrayContaining([
+        "Remote",
+        "Contract / freelance",
+        "Marketing",
+        "Sweden / EMEA eligible",
+      ]),
+    });
+  });
+
+  it("rejects a permanent remote sales role", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Remote Sales Manager",
+        description: "A permanent full-time remote role based in Sweden.",
+        engagementType: "Full-time",
+        tags: ["Sales"],
+      }),
+    ).toMatchObject({ matched: false, rejectionReason: "Not contract or freelance" });
+  });
+
+  it("rejects hybrid work even when the source marks it remote", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        description: "Freelance marketing consultant. Hybrid, three office days in Stockholm.",
+      }),
+    ).toMatchObject({ matched: false, rejectionReason: "Not fully remote" });
+  });
+
+  it("rejects an engineering role that only mentions a sales team", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Freelance Data Engineer",
+        tags: ["Engineering"],
+        description:
+          "Remote B2B contract in Europe, building analytics for the sales and marketing teams.",
+      }),
+    ).toMatchObject({ matched: false, rejectionReason: "Outside sales and marketing" });
+  });
+
+  it("rejects a remote role limited to the United States", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Contract Sales Director",
+        location: "United States",
+        country: "United States",
+        tags: ["Sales", "Contract"],
+        description: "Remote contract. Candidates must be located in the US only.",
+      }),
+    ).toMatchObject({ matched: false, rejectionReason: "Outside Sweden / EMEA" });
+  });
+
+  it("does not admit an unrelated role just because Swedish is required", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Swedish Customer Support Contractor",
+        tags: ["Customer Support"],
+        description: "Fully remote freelance role for Swedish speakers in Europe.",
+      }),
+    ).toMatchObject({ matched: false, rejectionReason: "Outside sales and marketing" });
+  });
+
+  it("adds Swedish as a relevance signal for an eligible role", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Swedish-speaking Freelance Account Executive",
+        tags: ["Sales"],
+      }),
+    ).toMatchObject({
+      matched: true,
+      category: "Sales",
+      matchReasons: expect.arrayContaining(["Swedish relevance"]),
+    });
+  });
+});
+
+describe("canonicalizeUrl", () => {
+  it("removes tracking parameters and fragments without removing job identifiers", () => {
+    expect(
+      canonicalizeUrl(
+        "https://jobs.example.com/opening?gh_jid=42&utm_source=arbeitnow&ref=feed#apply",
+      ),
+    ).toBe("https://jobs.example.com/opening?gh_jid=42");
+  });
+});
