@@ -135,6 +135,18 @@ describe("BrowserRuntime", () => {
     expect(recoveryContext.closeCalls).toBe(1);
   });
 
+  it("preserves a feature-prefixed launcher failure", async () => {
+    const launchError = new Error("[job radar linkedin] Launch failed");
+    const launcher: BrowserLauncher = {
+      async launchPersistentContext() {
+        throw launchError;
+      },
+    };
+    const runtime = new BrowserRuntime("/tmp/job-radar-profile", launcher);
+
+    await expect(runtime.run(async () => undefined)).rejects.toBe(launchError);
+  });
+
   it("wraps an unprefixed task failure with its cause", async () => {
     const context = new FakeContext();
     const taskError = new TypeError("page parsing failed");
@@ -181,6 +193,18 @@ describe("BrowserRuntime", () => {
     );
     expect(failedContext.closeCalls).toBe(1);
     expect(recoveryContext.closeCalls).toBe(1);
+  });
+
+  it("preserves a feature-prefixed standalone close failure", async () => {
+    const closeError = new Error("[job radar linkedin] Close failed");
+    const context = new FakeContext(closeError);
+    const runtime = new BrowserRuntime(
+      "/tmp/job-radar-profile",
+      new FakeLauncher(context),
+    );
+
+    await expect(runtime.run(async () => "completed")).rejects.toBe(closeError);
+    expect(context.closeCalls).toBe(1);
   });
 
   it("keeps the original task error when closing also fails", async () => {

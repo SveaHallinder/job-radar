@@ -54,6 +54,7 @@ export class BrowserRuntime {
           },
         );
       } catch (error) {
+        if (hasJobRadarPrefix(error)) throw error;
         throw browserRunError(error);
       }
 
@@ -76,6 +77,7 @@ export class BrowserRuntime {
               error,
             );
           } else {
+            if (hasJobRadarPrefix(error)) throw error;
             throw browserRunError(error);
           }
         }
