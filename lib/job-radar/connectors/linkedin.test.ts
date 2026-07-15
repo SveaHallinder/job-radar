@@ -86,6 +86,17 @@ describe("mapLinkedInJob", () => {
       "detail-42",
     );
   });
+
+  it("does not infer remote or Sales from ambiguous commercial prose", () => {
+    expect(
+      mapLinkedInJob({
+        ...baseDetail,
+        title: "Commercial Counsel",
+        location: "London, United Kingdom",
+        description: "Advise on commercial agreements and regulation.",
+      }),
+    ).toMatchObject({ remote: null, tags: [] });
+  });
 });
 
 class MemoryStatePort implements LinkedInStatePort {
@@ -122,7 +133,7 @@ class FakeLinkedInSession implements LinkedInBrowserSession {
     this.searchCalls.push({ url, limit });
     if (this.searchError) throw this.searchError;
     const keywords = new URL(url).searchParams.get("keywords") || "";
-    return this.searchResults.get(keywords) || [];
+    return (this.searchResults.get(keywords) || []).slice(0, limit);
   }
 
   async detail(reference: LinkedInJobReference): Promise<LinkedInDetail | null> {
@@ -261,6 +272,22 @@ describe("LinkedInConnector", () => {
     ]);
   });
 
+  it("scans bounded extra results to fill the cap after cross-search duplicates", async () => {
+    const { connector, session } = createConnector({
+      config: { linkedinBootstrapMaxResults: 3, linkedinMaxDetails: 3 },
+    });
+    session.searchResults.set("sales", [reference("1"), reference("2")]);
+    session.searchResults.set("marketing", [
+      reference("1"),
+      reference("2"),
+      reference("3"),
+    ]);
+
+    const jobs = await connector.fetchJobs();
+
+    expect(jobs.map((job) => job.externalId)).toEqual(["1", "2", "3"]);
+  });
+
   it("never fetches more than maxDetails", async () => {
     const { connector, session } = createConnector({
       config: { linkedinBootstrapMaxResults: 5, linkedinMaxDetails: 2 },
@@ -375,6 +402,8 @@ interface FakeDomNode {
   text?: string;
   attributes?: Record<string, string>;
   children?: Record<string, FakeDomNode[]>;
+  attributeError?: Error;
+  textError?: Error;
 }
 
 class FakeLocator implements LinkedInLocatorPort {
@@ -399,10 +428,13 @@ class FakeLocator implements LinkedInLocatorPort {
   }
 
   async getAttribute(name: string): Promise<string | null> {
+    if (!this.nodes[0]) throw new Error("Fake locator has no matching node");
+    if (this.nodes[0].attributeError) throw this.nodes[0].attributeError;
     return this.nodes[0]?.attributes?.[name] || null;
   }
 
   async innerText(): Promise<string> {
+    if (this.nodes[0]?.textError) throw this.nodes[0].textError;
     const text = this.nodes[0]?.text;
     if (text === undefined) throw new Error("Fake locator has no text");
     return text;
@@ -414,12 +446,13 @@ class FakePage implements LinkedInPagePort {
   readonly selectors: string[] = [];
   readonly bodies = new Map<string, string>();
   readonly nodes = new Map<string, Record<string, FakeDomNode[]>>();
+  readonly statuses = new Map<string, number>();
   currentUrl = "about:blank";
 
   async goto(url: string): Promise<{ status(): number }> {
     this.currentUrl = url;
     this.navigations.push(url);
-    return { status: () => 200 };
+    return { status: () => this.statuses.get(url) ?? 200 };
   }
 
   url(): string {
@@ -472,6 +505,11 @@ describe("PlaywrightLinkedInBrowserPort", () => {
     const searchUrl =
       "https://www.linkedin.com/jobs/search/?keywords=sales&f_TPR=r604800&f_WT=2";
     page.bodies.set(searchUrl, "No matching jobs");
+    page.nodes.set(searchUrl, {
+      ".jobs-search-no-results-banner, .jobs-search-no-results-list, .jobs-search-results-list__empty-state": [
+        { text: "No matching jobs" },
+      ],
+    });
     const { closeCalls, newPageCalls, port } = createProductionPort(page);
 
     const results = await port.run(async (session) => {
@@ -491,35 +529,190 @@ describe("PlaywrightLinkedInBrowserPort", () => {
     expect(closeCalls()).toBe(1);
   });
 
+  it("waits boundedly for delayed search cards", async () => {
+    const page = new FakePage();
+    page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
+    const searchUrl = "https://www.linkedin.com/jobs/search/?keywords=delayed";
+    page.bodies.set(searchUrl, "Search results loading");
+    const delayedCards: FakeDomNode[] = [];
+    page.nodes.set(searchUrl, {
+      "[data-job-id], .job-card-container, li.jobs-search-results__list-item":
+        delayedCards,
+    });
+    let now = 0;
+    const waits: number[] = [];
+    const { port } = createProductionPort(page, {
+      now: () => now,
+      searchReadyTimeoutMs: 1_000,
+      wait: async (milliseconds) => {
+        now += milliseconds;
+        waits.push(milliseconds);
+        delayedCards.push({
+          attributes: { "data-job-id": "delayed-21" },
+          children: {
+            'a[href*="/jobs/view/"]': [
+              { attributes: { href: "/jobs/view/21/" } },
+            ],
+          },
+        });
+      },
+    });
+
+    const results = await port.run(async (session) => {
+      await session.ensureAuthenticated();
+      return session.search(searchUrl, 1);
+    });
+
+    expect(results).toEqual([
+      {
+        externalId: "delayed-21",
+        url: "https://www.linkedin.com/jobs/view/21/",
+      },
+    ]);
+    expect(waits).toEqual([250]);
+  });
+
+  it.each([
+    ["HTTP 500", 500, "Server error"],
+    ["unknown readiness timeout", 200, "Please wait"],
+  ])("does not advance state after %s during search", async (_case, status, body) => {
+    const page = new FakePage();
+    page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
+    const searchUrl = "https://www.linkedin.com/jobs/search/?keywords=sales";
+    page.bodies.set(searchUrl, body);
+    page.statuses.set(searchUrl, status);
+    let now = 0;
+    const { port } = createProductionPort(page, {
+      now: () => now,
+      searchReadyTimeoutMs: 500,
+      wait: async (milliseconds) => {
+        now += milliseconds;
+      },
+    });
+    const state = new MemoryStatePort();
+    const connector = new LinkedInConnector(
+      connectorConfig({ linkedinSearchUrls: [searchUrl] }),
+      state,
+      port,
+    );
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      await expect(connector.fetchJobs()).rejects.toThrow(
+        /^\[job radar linkedin\]/,
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect(state.saved).toEqual([]);
+  });
+
+  it("extracts direct and nested IDs with safe canonical URLs and bounded filtering", async () => {
+    const page = new FakePage();
+    page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
+    const searchUrl = "https://www.linkedin.com/jobs/search/?keywords=sales";
+    page.bodies.set(searchUrl, "Search results");
+    page.nodes.set(searchUrl, {
+      "[data-job-id], .job-card-container, li.jobs-search-results__list-item": [
+        {
+          attributes: { "data-job-id": "unsafe" },
+          children: {
+            'a[href*="/jobs/view/"]': [
+              { attributes: { href: "http://www.linkedin.com/jobs/view/9/" } },
+            ],
+          },
+        },
+        {
+          attributes: { "data-job-id": "direct-11" },
+          children: {
+            'a[href*="/jobs/view/"]': [
+              {
+                attributes: {
+                  href: "/jobs/view/11/?trackingId=secret#fragment",
+                },
+              },
+            ],
+          },
+        },
+        {
+          children: {
+            "[data-job-id]": [
+              { attributes: { "data-job-id": "nested-12" } },
+            ],
+            'a[href*="/jobs/view/"]': [
+              { attributes: { href: "https://se.linkedin.com/jobs/view/12/" } },
+            ],
+          },
+        },
+        { attributes: { "data-job-id": "malformed" } },
+        {
+          attributes: { "data-job-id": "credentialed" },
+          children: {
+            'a[href*="/jobs/view/"]': [
+              {
+                attributes: {
+                  href: "https://user:pass@www.linkedin.com/jobs/view/13/",
+                },
+              },
+            ],
+          },
+        },
+      ],
+    });
+    const { port } = createProductionPort(page);
+
+    const results = await port.run(async (session) => {
+      await session.ensureAuthenticated();
+      return session.search(searchUrl, 2);
+    });
+
+    expect(results).toEqual([
+      {
+        externalId: "direct-11",
+        url: "https://www.linkedin.com/jobs/view/11/",
+      },
+      {
+        externalId: "nested-12",
+        url: "https://se.linkedin.com/jobs/view/12/",
+      },
+    ]);
+  });
+
   it("paces between detail navigations and uses the required detail fallbacks", async () => {
     const page = new FakePage();
     page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
     const first = reference("1");
     const second = reference("2");
-    const descriptionSelector =
-      ".jobs-description-content__text, .jobs-description__content, .jobs-box__html-content";
-    const detailNodes = {
-      ".job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, h1": [
+    const firstDetailNodes = {
+      ".jobs-unified-top-card__job-title": [
         { text: "Sales Lead" },
       ],
-      ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, a[href*='/company/']": [
+      ".jobs-unified-top-card__company-name": [
         { text: "Acme AB" },
       ],
-      ".job-details-jobs-unified-top-card__primary-description-container .tvm__text, .jobs-unified-top-card__bullet": [
+      ".job-details-jobs-unified-top-card__primary-description-container .tvm__text": [
         { text: "Remote, Sweden" },
       ],
-      ".job-details-preferences-and-skills__pill, .jobs-unified-top-card__job-insight": [
+      ".jobs-unified-top-card__job-insight": [
         { text: "Contract" },
       ],
-      "time[datetime]": [
+      ".jobs-unified-top-card__posted-date time[datetime]": [
         { attributes: { datetime: "2026-07-15T08:00:00.000Z" } },
       ],
-      [descriptionSelector]: [{ text: "Contract role." }],
+      ".jobs-box__html-content": [{ text: "Contract role." }],
     };
-    for (const job of [first, second]) {
-      page.bodies.set(job.url, "Apply now");
-      page.nodes.set(job.url, detailNodes);
-    }
+    page.bodies.set(first.url, "Apply now");
+    page.nodes.set(first.url, firstDetailNodes);
+    page.bodies.set(second.url, "Apply now");
+    page.nodes.set(second.url, {
+      ".job-details-jobs-unified-top-card__job-title": [
+        { text: "Marketing Lead" },
+      ],
+      ".job-details-jobs-unified-top-card__company-name": [
+        { text: "Beta AB" },
+      ],
+      ".jobs-description-content__text": [{ text: "Second role." }],
+    });
     const waits: number[] = [];
     const { port } = createProductionPort(page, {
       wait: async (milliseconds) => {
@@ -540,8 +733,15 @@ describe("PlaywrightLinkedInBrowserPort", () => {
       employmentType: "Contract",
       postedAt: "2026-07-15T08:00:00.000Z",
     });
+    expect(details[1]).toMatchObject({
+      employmentType: null,
+      postedAt: null,
+    });
     expect(waits).toEqual([1_500]);
-    expect(page.selectors).toContain(descriptionSelector);
+    expect(page.selectors).toContain(".jobs-box__html-content");
+    expect(page.selectors).not.toContain(
+      ".jobs-description-content__text, .jobs-description__content, .jobs-box__html-content",
+    );
   });
 
   it("logs manual login handoff and throws the exact timeout error", async () => {
@@ -571,6 +771,60 @@ describe("PlaywrightLinkedInBrowserPort", () => {
       errorLog.mockRestore();
     }
   });
+
+  it("completes the manual login handoff and verifies the feed again", async () => {
+    const page = new FakePage();
+    page.bodies.set(
+      "https://www.linkedin.com/feed/",
+      "Join LinkedIn or sign in",
+    );
+    let now = 0;
+    const { port } = createProductionPort(page, {
+      now: () => now,
+      wait: async (milliseconds) => {
+        now += milliseconds;
+        page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
+      },
+    });
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      await expect(
+        port.run((session) => session.ensureAuthenticated()),
+      ).resolves.toBeUndefined();
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect(page.navigations).toEqual([
+      "https://www.linkedin.com/feed/",
+      "https://www.linkedin.com/feed/",
+    ]);
+  });
+
+  it.each(["search", "detail"] as const)(
+    "stops on a classified block during %s navigation",
+    async (operation) => {
+      const page = new FakePage();
+      page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
+      const target =
+        operation === "search"
+          ? "https://www.linkedin.com/jobs/search/?keywords=sales"
+          : "https://www.linkedin.com/jobs/view/42/";
+      page.bodies.set(target, "Our systems have detected unusual traffic");
+      const { port } = createProductionPort(page);
+
+      await expect(
+        port.run(async (session) => {
+          await session.ensureAuthenticated();
+          return operation === "search"
+            ? session.search(target, 1)
+            : session.detail(reference("42"));
+        }),
+      ).rejects.toThrow(
+        "[job radar linkedin] LinkedIn blocked browser discovery",
+      );
+    },
+  );
 
   it("stops immediately on a classified block page", async () => {
     const page = new FakePage();

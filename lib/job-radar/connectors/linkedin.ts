@@ -13,17 +13,35 @@ const BLOCKED_ERROR = `${ERROR_PREFIX} LinkedIn blocked browser discovery`;
 const FEED_URL = "https://www.linkedin.com/feed/";
 const CARD_SELECTOR =
   "[data-job-id], .job-card-container, li.jobs-search-results__list-item";
+const NO_RESULTS_SELECTOR =
+  ".jobs-search-no-results-banner, .jobs-search-no-results-list, .jobs-search-results-list__empty-state";
 const JOB_LINK_SELECTOR = 'a[href*="/jobs/view/"]';
-const DESCRIPTION_SELECTOR =
-  ".jobs-description-content__text, .jobs-description__content, .jobs-box__html-content";
-const TITLE_SELECTOR =
-  ".job-details-jobs-unified-top-card__job-title, .jobs-unified-top-card__job-title, h1";
-const COMPANY_SELECTOR =
-  ".job-details-jobs-unified-top-card__company-name, .jobs-unified-top-card__company-name, a[href*='/company/']";
-const LOCATION_SELECTOR =
-  ".job-details-jobs-unified-top-card__primary-description-container .tvm__text, .jobs-unified-top-card__bullet";
-const EMPLOYMENT_SELECTOR =
-  ".job-details-preferences-and-skills__pill, .jobs-unified-top-card__job-insight";
+const DESCRIPTION_SELECTORS = [
+  ".jobs-description-content__text",
+  ".jobs-description__content",
+  ".jobs-box__html-content",
+] as const;
+const TITLE_SELECTORS = [
+  ".job-details-jobs-unified-top-card__job-title",
+  ".jobs-unified-top-card__job-title",
+] as const;
+const COMPANY_SELECTORS = [
+  ".job-details-jobs-unified-top-card__company-name",
+  ".jobs-unified-top-card__company-name",
+  ".job-details-jobs-unified-top-card__primary-description-container a[href*='/company/']",
+] as const;
+const LOCATION_SELECTORS = [
+  ".job-details-jobs-unified-top-card__primary-description-container .tvm__text",
+  ".jobs-unified-top-card__bullet",
+] as const;
+const EMPLOYMENT_SELECTORS = [
+  ".job-details-preferences-and-skills__pill",
+  ".jobs-unified-top-card__job-insight",
+] as const;
+const POSTED_AT_SELECTORS = [
+  ".job-details-jobs-unified-top-card__tertiary-description-container time[datetime]",
+  ".jobs-unified-top-card__posted-date time[datetime]",
+] as const;
 
 export interface LinkedInDetail {
   externalId?: string | null;
@@ -78,6 +96,7 @@ export interface PlaywrightLinkedInBrowserOptions {
   wait?: (milliseconds: number) => Promise<void>;
   now?: () => number;
   loginTimeoutMs?: number;
+  searchReadyTimeoutMs?: number;
 }
 
 export function withLinkedInRecency(
@@ -133,7 +152,7 @@ function referenceKey(reference: LinkedInJobReference): string {
 function tagsFromTitle(title: string): string[] {
   const tags: string[] = [];
   if (
-    /\b(?:sales|account executive|business development|revenue|commercial|partnerships?)\b/i.test(
+    /\b(?:sales|account executive|business development|revenue operations?|partnerships?)\b/i.test(
       title,
     )
   ) {
@@ -149,6 +168,12 @@ function tagsFromTitle(title: string): string[] {
   return tags;
 }
 
+function remoteFromDetail(detail: LinkedInDetail): true | null {
+  const evidence = `${detail.location}\n${detail.description}`;
+  if (/\b(?:not|non[- ]?)\s*remote\b/i.test(evidence)) return null;
+  return /\bremote\b|\bwork(?:ing)? from home\b/i.test(evidence) ? true : null;
+}
+
 export function mapLinkedInJob(detail: LinkedInDetail): SourceJob {
   return {
     source: "LinkedIn",
@@ -161,7 +186,7 @@ export function mapLinkedInJob(detail: LinkedInDetail): SourceJob {
     country: null,
     description: detail.description,
     engagementType: detail.employmentType || null,
-    remote: true,
+    remote: remoteFromDetail(detail),
     tags: tagsFromTitle(detail.title),
     postedAt: detail.postedAt || null,
   };
@@ -187,19 +212,65 @@ function jobUrl(value: string): string | null {
     const url = new URL(value, "https://www.linkedin.com");
     const isLinkedIn =
       url.hostname === "linkedin.com" || url.hostname.endsWith(".linkedin.com");
-    if (!isLinkedIn || !url.pathname.startsWith("/jobs/view/")) return null;
+    if (
+      url.protocol !== "https:" ||
+      url.username ||
+      url.password ||
+      !isLinkedIn ||
+      !/^\/jobs\/view\/[^/]+\/?$/i.test(url.pathname)
+    ) {
+      return null;
+    }
+    url.search = "";
+    url.hash = "";
     return url.toString();
   } catch {
     return null;
   }
 }
 
-async function optionalText(locator: LinkedInLocatorPort): Promise<string> {
-  try {
-    return (await locator.first().innerText()).trim();
-  } catch {
-    return "";
+async function optionalAttribute(
+  locator: LinkedInLocatorPort,
+  name: string,
+): Promise<string | null> {
+  if ((await locator.count()) === 0) return null;
+  return locator.first().getAttribute(name);
+}
+
+async function firstText(
+  page: LinkedInPagePort,
+  selectors: readonly string[],
+): Promise<string> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    if ((await locator.count()) === 0) continue;
+    const text = (await locator.first().innerText()).trim();
+    if (text) return text;
   }
+  return "";
+}
+
+async function firstAttribute(
+  page: LinkedInPagePort,
+  selectors: readonly string[],
+  name: string,
+): Promise<string | null> {
+  for (const selector of selectors) {
+    const locator = page.locator(selector);
+    if ((await locator.count()) === 0) continue;
+    const value = await locator.first().getAttribute(name);
+    if (value?.trim()) return value.trim();
+  }
+  return null;
+}
+
+function jobLogLabel(reference: LinkedInJobReference): string {
+  const externalId = reference.externalId
+    ?.replace(/[^a-z0-9:_-]/gi, "")
+    .slice(0, 80);
+  if (externalId) return externalId;
+  const safeUrl = jobUrl(reference.url);
+  return safeUrl ? new URL(safeUrl).pathname : "unknown-job";
 }
 
 class PlaywrightLinkedInSession implements LinkedInBrowserSession {
@@ -210,6 +281,7 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     private readonly wait: (milliseconds: number) => Promise<void>,
     private readonly now: () => number,
     private readonly loginTimeoutMs: number,
+    private readonly searchReadyTimeoutMs: number,
   ) {}
 
   private async currentStatus(status: number | null): Promise<PageStatus> {
@@ -221,11 +293,17 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     });
   }
 
-  private async navigate(url: string): Promise<PageStatus> {
+  private async navigate(
+    url: string,
+  ): Promise<{ pageStatus: PageStatus; httpStatus: number | null }> {
     const response = await this.page.goto(url, {
       waitUntil: "domcontentloaded",
     });
-    return this.currentStatus(response?.status() ?? null);
+    const httpStatus = response?.status() ?? null;
+    return {
+      pageStatus: await this.currentStatus(httpStatus),
+      httpStatus,
+    };
   }
 
   private assertAccessible(status: PageStatus, operation: string): void {
@@ -236,11 +314,40 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     }
   }
 
+  private assertHttpStatus(
+    status: number | null,
+    operation: string,
+  ): void {
+    if (status !== null && status >= 400) {
+      throw new Error(
+        `${ERROR_PREFIX} LinkedIn ${operation} navigation failed with HTTP ${status}`,
+      );
+    }
+  }
+
+  private async waitForSearchReady(): Promise<LinkedInLocatorPort> {
+    const cards = this.page.locator(CARD_SELECTOR);
+    const noResults = this.page.locator(NO_RESULTS_SELECTOR);
+    const deadline = this.now() + this.searchReadyTimeoutMs;
+
+    while (true) {
+      if ((await cards.count()) > 0) return cards;
+      if ((await noResults.count()) > 0) return cards;
+      const remaining = deadline - this.now();
+      if (remaining <= 0) {
+        throw new Error(`${ERROR_PREFIX} LinkedIn search readiness timed out`);
+      }
+      await this.wait(Math.min(250, remaining));
+    }
+  }
+
   async ensureAuthenticated(): Promise<void> {
-    const status = await this.navigate(FEED_URL);
+    const navigation = await this.navigate(FEED_URL);
+    const status = navigation.pageStatus;
     if (status === "blocked") throw new Error(BLOCKED_ERROR);
     if (status !== "login-required") {
       this.assertAccessible(status, "feed");
+      this.assertHttpStatus(navigation.httpStatus, "feed");
       return;
     }
 
@@ -256,9 +363,11 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
       if (currentStatus === "blocked") throw new Error(BLOCKED_ERROR);
       if (currentStatus === "login-required") continue;
 
-      const verifiedStatus = await this.navigate(FEED_URL);
+      const verifiedNavigation = await this.navigate(FEED_URL);
+      const verifiedStatus = verifiedNavigation.pageStatus;
       if (verifiedStatus === "login-required") continue;
       this.assertAccessible(verifiedStatus, "feed");
+      this.assertHttpStatus(verifiedNavigation.httpStatus, "feed");
       return;
     }
 
@@ -266,29 +375,36 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
   }
 
   async search(url: string, limit: number): Promise<LinkedInJobReference[]> {
-    const status = await this.navigate(url);
-    this.assertAccessible(status, "search");
+    const navigation = await this.navigate(url);
+    this.assertAccessible(navigation.pageStatus, "search");
+    this.assertHttpStatus(navigation.httpStatus, "search");
 
-    const cards = this.page.locator(CARD_SELECTOR);
-    const count = Math.min(await cards.count(), limit);
+    const cards = await this.waitForSearchReady();
+    const count = Math.min(await cards.count(), Math.max(limit, limit * 3));
     const references: LinkedInJobReference[] = [];
+    const seen = new Set<string>();
 
     for (let index = 0; index < count; index += 1) {
       const card = cards.nth(index);
-      const nestedId = await card
-        .locator("[data-job-id]")
-        .first()
-        .getAttribute("data-job-id");
-      const externalId =
-        (await card.getAttribute("data-job-id")) || nestedId || undefined;
+      const directId = await optionalAttribute(card, "data-job-id");
+      const nestedId = directId
+        ? null
+        : await optionalAttribute(card.locator("[data-job-id]"), "data-job-id");
+      const externalId = directId || nestedId || undefined;
+      const directHref = await optionalAttribute(card, "href");
       const href =
-        (await card.getAttribute("href")) ||
-        (await card
-          .locator(JOB_LINK_SELECTOR)
-          .first()
-          .getAttribute("href"));
+        directHref ||
+        (await optionalAttribute(card.locator(JOB_LINK_SELECTOR), "href"));
       const url = href ? jobUrl(href) : null;
-      if (url) references.push({ externalId, url });
+      if (!url) continue;
+
+      const reference = { externalId, url };
+      const key = referenceKey(reference);
+      if (!seen.has(key)) {
+        seen.add(key);
+        references.push(reference);
+      }
+      if (references.length >= limit) break;
     }
 
     return references;
@@ -296,33 +412,33 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
 
   async detail(reference: LinkedInJobReference): Promise<LinkedInDetail | null> {
     if (this.detailNavigationCompleted) await this.wait(1_500);
-    const status = await this.navigate(reference.url);
+    const navigation = await this.navigate(reference.url);
     this.detailNavigationCompleted = true;
+    const status = navigation.pageStatus;
     if (status === "blocked") throw new Error(BLOCKED_ERROR);
     if (status === "login-required") throw new Error(LOGIN_REQUIRED_ERROR);
     if (status === "inactive") return null;
+    this.assertHttpStatus(navigation.httpStatus, "detail");
 
-    const title = await optionalText(this.page.locator(TITLE_SELECTOR));
-    const company = await optionalText(this.page.locator(COMPANY_SELECTOR));
-    const description = await optionalText(
-      this.page.locator(DESCRIPTION_SELECTOR),
-    );
+    const title = await firstText(this.page, TITLE_SELECTORS);
+    const company = await firstText(this.page, COMPANY_SELECTORS);
+    const description = await firstText(this.page, DESCRIPTION_SELECTORS);
     if (!title || !company || !description) {
       throw new Error(
-        `${ERROR_PREFIX} LinkedIn detail parser failed for ${reference.url}`,
+        `${ERROR_PREFIX} LinkedIn detail parser failed for ${jobLogLabel(reference)}`,
       );
     }
 
     const location =
-      (await optionalText(this.page.locator(LOCATION_SELECTOR))) ||
+      (await firstText(this.page, LOCATION_SELECTORS)) ||
       "Location not specified";
     const employmentType =
-      (await optionalText(this.page.locator(EMPLOYMENT_SELECTOR))) || null;
-    const postedAt =
-      (await this.page
-        .locator("time[datetime]")
-        .first()
-        .getAttribute("datetime")) || null;
+      (await firstText(this.page, EMPLOYMENT_SELECTORS)) || null;
+    const postedAt = await firstAttribute(
+      this.page,
+      POSTED_AT_SELECTORS,
+      "datetime",
+    );
 
     return {
       externalId: reference.externalId,
@@ -341,6 +457,7 @@ export class PlaywrightLinkedInBrowserPort implements LinkedInBrowserPort {
   private readonly wait: (milliseconds: number) => Promise<void>;
   private readonly now: () => number;
   private readonly loginTimeoutMs: number;
+  private readonly searchReadyTimeoutMs: number;
 
   constructor(
     private readonly runtime: BrowserRuntime,
@@ -352,6 +469,7 @@ export class PlaywrightLinkedInBrowserPort implements LinkedInBrowserPort {
         new Promise((resolve) => setTimeout(resolve, milliseconds)));
     this.now = options.now || Date.now;
     this.loginTimeoutMs = options.loginTimeoutMs ?? 300_000;
+    this.searchReadyTimeoutMs = options.searchReadyTimeoutMs ?? 10_000;
   }
 
   async run<T>(task: (session: LinkedInBrowserSession) => Promise<T>): Promise<T> {
@@ -363,6 +481,7 @@ export class PlaywrightLinkedInBrowserPort implements LinkedInBrowserPort {
         this.wait,
         this.now,
         this.loginTimeoutMs,
+        this.searchReadyTimeoutMs,
       );
 
       try {
@@ -420,7 +539,7 @@ export class LinkedInConnector implements JobConnector {
             savedSearchUrl,
             state.linkedinBootstrapCompleted,
           );
-          const results = await session.search(searchUrl, remaining);
+          const results = await session.search(searchUrl, resultLimit);
 
           for (const reference of results) {
             if (!reference.url?.trim()) {
