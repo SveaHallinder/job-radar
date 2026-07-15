@@ -24,6 +24,15 @@ export async function runSyncAction(
     const summary = await syncJobs();
     revalidatePath("/");
 
+    if (summary.status === "failed") {
+      return {
+        status: "error",
+        message:
+          "[job radar] Alla aktiva datakällor misslyckades. Befintliga resultat finns kvar; kontrollera serverloggen.",
+        summary,
+      };
+    }
+
     const sourceNote = summary.sourceErrors.length
       ? ` ${summary.sourceErrors.length} källa kunde inte nås; befintliga resultat finns kvar.`
       : "";
