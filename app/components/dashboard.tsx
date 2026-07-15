@@ -2,13 +2,20 @@
 
 import { useActionState, useMemo, useState } from "react";
 
-import { initialSyncState, runSyncAction } from "../actions";
+import { runSyncAction } from "../actions";
+import type { SyncActionState } from "../actions";
 import type { DashboardStats, StoredJob } from "@/lib/job-radar/types";
 
 interface DashboardProps {
   jobs: StoredJob[];
   stats: DashboardStats;
 }
+
+const initialSyncState: SyncActionState = {
+  status: "idle",
+  message: "",
+  summary: null,
+};
 
 function RadarMark() {
   return (

@@ -4,8 +4,12 @@ const REMOTE_PATTERN =
   /\b(remote|fully remote|100% remote|work from anywhere|work remotely|distans|distansarbete|hemifran|remote-first)\b/i;
 const NOT_REMOTE_PATTERN =
   /\b(hybrid|hybridarbete|on[ -]?site|office[ -]?based|office only|not remote|ej distans|pa plats)\b/i;
-const CONTRACT_PATTERN =
-  /\b(contract(?:or|ing)?|freelanc(?:e|er)|consult(?:ant|ing|ancy)|konsult|interim|fractional|self-employed|b2b)\b/i;
+const CONTRACT_ROLE_PATTERN =
+  /\b(contract(?:or|ing)?|freelanc(?:e|er)|consultant|konsult|interim|fractional|self-employed)\b/i;
+const CONTRACT_DESCRIPTION_PATTERN =
+  /\b(freelanc(?:e|er)|contractor|contract (?:role|position|assignment|engagement|basis|opportunity)|on (?:an? )?contract basis|consulting assignment|independent consulting|not a salaried employment|konsultuppdrag|interim (?:role|assignment|position)|fractional (?:role|position)|self-employed)\b/i;
+const B2B_ENGAGEMENT_PATTERN =
+  /\b(b2b (?:contract|agreement|engagement|basis)|on (?:a )?b2b (?:contract|basis)|(?:contract|agreement|engagement) on (?:a )?b2b basis)\b/i;
 const MARKETING_PATTERN =
   /\b(marketing|marknadsforing|marknadschef|growth marketing|demand generation|content marketing|seo|sem|paid media|performance marketer|brand manager|communications manager|crm manager|lifecycle marketing|acquisition manager)\b/i;
 const SALES_PATTERN =
@@ -43,7 +47,7 @@ function classifyCategory(job: SourceJob): JobCategory | null {
 }
 
 function normalizeEngagement(text: string): string {
-  if (/\bb2b\b/i.test(text)) return "B2B";
+  if (B2B_ENGAGEMENT_PATTERN.test(text)) return "B2B";
   if (/\bfractional\b/i.test(text)) return "Fractional";
   if (/\binterim\b/i.test(text)) return "Interim";
   if (/\bfreelanc(?:e|er)\b/i.test(text)) return "Freelance";
@@ -59,7 +63,13 @@ export function matchJob(job: SourceJob): MatchResult {
     return { matched: false, rejectionReason: "Not fully remote" };
   }
 
-  if (!CONTRACT_PATTERN.test(allText)) {
+  const contractSignalText = [job.title, job.engagementType ?? "", ...job.tags].join(" ");
+  const hasContractEngagement =
+    CONTRACT_ROLE_PATTERN.test(contractSignalText) ||
+    CONTRACT_DESCRIPTION_PATTERN.test(job.description) ||
+    B2B_ENGAGEMENT_PATTERN.test(allText);
+
+  if (!hasContractEngagement) {
     return { matched: false, rejectionReason: "Not contract or freelance" };
   }
 
@@ -77,7 +87,9 @@ export function matchJob(job: SourceJob): MatchResult {
   }
 
   const engagementType = normalizeEngagement(
-    job.engagementType && CONTRACT_PATTERN.test(job.engagementType)
+    job.engagementType &&
+    (CONTRACT_ROLE_PATTERN.test(job.engagementType) ||
+      B2B_ENGAGEMENT_PATTERN.test(job.engagementType))
       ? job.engagementType
       : allText,
   );

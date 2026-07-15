@@ -225,6 +225,12 @@ export class SqliteJobRepository implements JobRepository {
     return "created";
   }
 
+  deleteJobBySourceId(source: string, externalId: string): void {
+    this.database
+      .prepare("DELETE FROM jobs WHERE source = ? AND external_id = ?")
+      .run(source, externalId);
+  }
+
   finishSyncRun(summary: SyncSummary): void {
     this.database
       .prepare(`

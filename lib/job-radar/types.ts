@@ -79,6 +79,7 @@ export interface JobConnector {
 export interface JobRepository {
   startSyncRun(startedAt: string): string;
   upsertJob(job: MatchedJob, seenAt: string): "created" | "updated";
+  deleteJobBySourceId(source: string, externalId: string): void;
   finishSyncRun(summary: SyncSummary): void;
   listJobs(): StoredJob[];
   getDashboardStats(): DashboardStats;

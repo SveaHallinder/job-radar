@@ -11,15 +11,11 @@ export interface SyncActionState {
   summary: SyncSummary | null;
 }
 
-export const initialSyncState: SyncActionState = {
-  status: "idle",
-  message: "",
-  summary: null,
-};
-
 export async function runSyncAction(
   _previousState: SyncActionState,
 ): Promise<SyncActionState> {
+  void _previousState;
+
   try {
     const summary = await syncJobs();
     revalidatePath("/");

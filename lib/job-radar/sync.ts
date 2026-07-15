@@ -103,6 +103,7 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
       if (!match.matched) {
         rejected += 1;
         sourceResult.rejected += 1;
+        repository.deleteJobBySourceId(job.source, job.externalId);
         continue;
       }
 

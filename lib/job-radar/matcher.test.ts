@@ -46,6 +46,31 @@ describe("matchJob", () => {
     ).toMatchObject({ matched: false, rejectionReason: "Not contract or freelance" });
   });
 
+  it("does not treat B2B sales as a B2B contractor engagement", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "B2B Sales Representative",
+        description:
+          "Build the B2B sales pipeline for our SaaS product. This is a remote permanent position in Sweden.",
+        engagementType: "Permanent employment",
+        tags: ["Sales"],
+      }),
+    ).toMatchObject({ matched: false, rejectionReason: "Not contract or freelance" });
+  });
+
+  it("accepts B2B when it explicitly describes the engagement basis", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Remote Account Executive",
+        description: "Six-month role in Europe offered on a B2B contract basis.",
+        engagementType: null,
+        tags: ["Sales"],
+      }),
+    ).toMatchObject({ matched: true, engagementType: "B2B" });
+  });
+
   it("rejects hybrid work even when the source marks it remote", () => {
     expect(
       matchJob({

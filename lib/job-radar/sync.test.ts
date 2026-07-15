@@ -12,6 +12,7 @@ import type {
 
 class MemoryRepository implements JobRepository {
   saved: MatchedJob[] = [];
+  deleted: string[] = [];
   summary: SyncSummary | null = null;
 
   startSyncRun(): string {
@@ -21,6 +22,10 @@ class MemoryRepository implements JobRepository {
   upsertJob(job: MatchedJob): "created" | "updated" {
     this.saved.push(job);
     return "created";
+  }
+
+  deleteJobBySourceId(source: string, externalId: string): void {
+    this.deleted.push(`${source}:${externalId}`);
   }
 
   finishSyncRun(summary: SyncSummary): void {
@@ -95,6 +100,7 @@ describe("syncJobs", () => {
     });
     expect(summary.sourceErrors).toEqual(["Broken source: upstream unavailable"]);
     expect(repository.saved).toHaveLength(1);
+    expect(repository.deleted).toEqual(["Fixture:reject-1"]);
     expect(repository.saved[0].canonicalUrl).toBe("https://jobs.example.com/match-1");
     expect(repository.summary).toEqual(summary);
   });
