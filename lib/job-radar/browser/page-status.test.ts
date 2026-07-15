@@ -1,0 +1,173 @@
+import { describe, expect, it } from "vitest";
+
+import { classifyPageStatus } from "./page-status";
+
+describe("classifyPageStatus", () => {
+  it("classifies HTTP 429 as blocked", () => {
+    expect(
+      classifyPageStatus({
+        status: 429,
+        url: "https://jobs.example.com/roles/123",
+        text: "Apply now",
+      }),
+    ).toBe("blocked");
+  });
+
+  it.each([
+    ["CAPTCHA copy", "https://jobs.example.com/roles/123", "Complete the CAPTCHA to continue."],
+    [
+      "security verification copy",
+      "https://jobs.example.com/roles/123",
+      "Security verification required. Verify you are human to continue.",
+    ],
+    [
+      "unusual traffic copy",
+      "https://jobs.example.com/roles/123",
+      "We detected unusual traffic from your computer network.",
+    ],
+    [
+      "LinkedIn checkpoint challenge URL",
+      "https://www.linkedin.com/checkpoint/challenge/abc123",
+      "",
+    ],
+  ])("classifies %s as blocked", (_case, url, text) => {
+    expect(classifyPageStatus({ status: 200, url, text })).toBe("blocked");
+  });
+
+  it("keeps blocked precedence over stale inactive and login signals", () => {
+    expect(
+      classifyPageStatus({
+        status: 410,
+        url: "https://www.linkedin.com/login",
+        text: "Complete the CAPTCHA. This job is no longer available. Apply now.",
+      }),
+    ).toBe("blocked");
+  });
+
+  it("does not treat a generic challenge as a blocking signal", () => {
+    expect(
+      classifyPageStatus({
+        status: 200,
+        url: "https://jobs.example.com/challenge/123",
+        text: "Take on an exciting engineering challenge.",
+      }),
+    ).toBe("unknown");
+  });
+
+  it.each([
+    ["LinkedIn login URL", "https://www.linkedin.com/login?fromSignIn=true", ""],
+    [
+      "clear English login copy",
+      "https://jobs.example.com/roles/123",
+      "Sign in to continue to this job.",
+    ],
+    [
+      "clear Swedish login copy",
+      "https://jobs.example.com/roles/123",
+      "Logga in för att fortsätta till jobbet.",
+    ],
+  ])("classifies %s as login-required", (_case, url, text) => {
+    expect(classifyPageStatus({ status: 200, url, text })).toBe(
+      "login-required",
+    );
+  });
+
+  it("keeps login precedence over inactive and apply signals", () => {
+    expect(
+      classifyPageStatus({
+        status: 410,
+        url: "https://www.linkedin.com/uas/login",
+        text: "This job is no longer available. Apply now.",
+      }),
+    ).toBe("login-required");
+  });
+
+  it.each([404, 410])(
+    "classifies HTTP %i as inactive even when apply copy is stale",
+    (status) => {
+      expect(
+        classifyPageStatus({
+          status,
+          url: "https://jobs.example.com/roles/123",
+          text: "Apply now",
+        }),
+      ).toBe("inactive");
+    },
+  );
+
+  it("classifies a parseable validThrough strictly before now as inactive", () => {
+    expect(
+      classifyPageStatus(
+        {
+          status: 200,
+          url: "https://jobs.example.com/roles/123",
+          text: "Apply now",
+          validThrough: "2026-07-15T09:59:59.999Z",
+        },
+        new Date("2026-07-15T10:00:00.000Z"),
+      ),
+    ).toBe("inactive");
+  });
+
+  it.each([
+    ["equal to now", "2026-07-15T10:00:00.000Z"],
+    ["after now", "2026-07-15T10:00:00.001Z"],
+    ["invalid", "not-a-date"],
+  ])("does not classify a validThrough %s as inactive", (_case, validThrough) => {
+    expect(
+      classifyPageStatus(
+        {
+          status: 200,
+          url: "https://jobs.example.com/roles/123",
+          text: "",
+          validThrough,
+        },
+        new Date("2026-07-15T10:00:00.000Z"),
+      ),
+    ).toBe("unknown");
+  });
+
+  it.each([
+    ["expired English copy", "This job has expired."],
+    ["closed English copy", "This job posting is closed."],
+    ["filled English copy", "This position has been filled."],
+    ["unavailable English copy", "This job is no longer available."],
+    ["expired Swedish copy", "Annonsen har gått ut."],
+    ["closed Swedish copy", "Ansökan är stängd."],
+    ["filled Swedish copy", "Tjänsten är tillsatt."],
+    ["unavailable Swedish copy", "Tjänsten är inte längre tillgänglig."],
+  ])("classifies %s as inactive before apply copy", (_case, inactiveCopy) => {
+    expect(
+      classifyPageStatus({
+        status: 200,
+        url: "https://jobs.example.com/roles/123",
+        text: `${inactiveCopy} Apply now. Ansök nu.`,
+      }),
+    ).toBe("inactive");
+  });
+
+  it.each([
+    ["English Apply now action", "Apply now"],
+    ["English job application action", "Apply for this job"],
+    ["Swedish Ansök nu action", "Ansök nu"],
+    ["Swedish application action", "Skicka in din ansökan"],
+  ])("classifies %s as active", (_case, text) => {
+    expect(
+      classifyPageStatus({
+        status: 200,
+        url: "https://jobs.example.com/roles/123",
+        text,
+      }),
+    ).toBe("active");
+  });
+
+  it("returns unknown without a reliable page-state signal", () => {
+    expect(
+      classifyPageStatus({
+        status: 200,
+        url: "https://jobs.example.com/roles/123",
+        text: "Senior TypeScript engineer in Stockholm",
+      }),
+    ).toBe("unknown");
+  });
+});
