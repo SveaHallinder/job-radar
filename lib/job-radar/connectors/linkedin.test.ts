@@ -97,6 +97,21 @@ describe("mapLinkedInJob", () => {
       }),
     ).toMatchObject({ remote: null, tags: [] });
   });
+
+  it.each([
+    ["not a remote position", "This is not a remote position."],
+    ["not fully remote", "This role is not fully remote."],
+    ["hybrid", "Hybrid role with remote working days."],
+    ["on-site", "Remote-friendly but on-site three days per week."],
+  ])("rejects %s as positive remote evidence", (_case, description) => {
+    expect(
+      mapLinkedInJob({
+        ...baseDetail,
+        location: "Stockholm, Sweden",
+        description,
+      }).remote,
+    ).toBeNull();
+  });
 });
 
 class MemoryStatePort implements LinkedInStatePort {
@@ -657,13 +672,37 @@ describe("PlaywrightLinkedInBrowserPort", () => {
             ],
           },
         },
+        {
+          attributes: { "data-job-id": "custom-port" },
+          children: {
+            'a[href*="/jobs/view/"]': [
+              {
+                attributes: {
+                  href: "https://www.linkedin.com:444/jobs/view/14/",
+                },
+              },
+            ],
+          },
+        },
+        {
+          attributes: { "data-job-id": "standard-port" },
+          children: {
+            'a[href*="/jobs/view/"]': [
+              {
+                attributes: {
+                  href: "https://www.linkedin.com:443/jobs/view/15/?trk=secret",
+                },
+              },
+            ],
+          },
+        },
       ],
     });
     const { port } = createProductionPort(page);
 
     const results = await port.run(async (session) => {
       await session.ensureAuthenticated();
-      return session.search(searchUrl, 2);
+      return session.search(searchUrl, 3);
     });
 
     expect(results).toEqual([
@@ -674,6 +713,10 @@ describe("PlaywrightLinkedInBrowserPort", () => {
       {
         externalId: "nested-12",
         url: "https://se.linkedin.com/jobs/view/12/",
+      },
+      {
+        externalId: "standard-port",
+        url: "https://www.linkedin.com/jobs/view/15/",
       },
     ]);
   });
@@ -742,6 +785,122 @@ describe("PlaywrightLinkedInBrowserPort", () => {
     expect(page.selectors).not.toContain(
       ".jobs-description-content__text, .jobs-description__content, .jobs-box__html-content",
     );
+  });
+
+  it("waits boundedly for a client-rendered detail before reading it", async () => {
+    const page = new FakePage();
+    const target = reference("21");
+    page.bodies.set(target.url, "Loading job");
+    const delayedNodes: Record<string, FakeDomNode[]> = {};
+    page.nodes.set(target.url, delayedNodes);
+    let now = 0;
+    const waits: number[] = [];
+    const { port } = createProductionPort(page, {
+      detailReadyTimeoutMs: 1_000,
+      now: () => now,
+      wait: async (milliseconds) => {
+        now += milliseconds;
+        waits.push(milliseconds);
+        delayedNodes[".jobs-unified-top-card__job-title"] = [
+          { text: "Delayed Sales Lead" },
+        ];
+        delayedNodes[".jobs-unified-top-card__company-name"] = [
+          { text: "Acme AB" },
+        ];
+        delayedNodes[".jobs-box__html-content"] = [
+          { text: "Delayed contract role." },
+        ];
+      },
+    });
+
+    const detail = await port.run((session) => session.detail(target));
+
+    expect(detail).toMatchObject({
+      title: "Delayed Sales Lead",
+      company: "Acme AB",
+      description: "Delayed contract role.",
+    });
+    expect(waits).toEqual([250]);
+  });
+
+  it.each([
+    [
+      "block",
+      "Our systems have detected unusual traffic",
+      "[job radar linkedin] LinkedIn blocked browser discovery",
+    ],
+    [
+      "login",
+      "Join LinkedIn or sign in",
+      "[job radar linkedin] LinkedIn login required",
+    ],
+  ])(
+    "reclassifies a delayed %s while waiting for detail readiness",
+    async (_case, body, expectedError) => {
+      const page = new FakePage();
+      const target = reference("22");
+      page.bodies.set(target.url, "Loading job");
+      let now = 0;
+      const { port } = createProductionPort(page, {
+        detailReadyTimeoutMs: 1_000,
+        now: () => now,
+        wait: async (milliseconds) => {
+          now += milliseconds;
+          page.bodies.set(target.url, body);
+        },
+      });
+
+      await expect(
+        port.run((session) => session.detail(target)),
+      ).rejects.toThrow(expectedError);
+    },
+  );
+
+  it("does not advance state after detail readiness times out", async () => {
+    const page = new FakePage();
+    page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
+    const savedSearch =
+      "https://www.linkedin.com/jobs/search/?keywords=timeout-detail";
+    const searchUrl = withLinkedInRecency(savedSearch, false);
+    const target = reference("23");
+    page.bodies.set(searchUrl, "Search results");
+    page.nodes.set(searchUrl, {
+      "[data-job-id], .job-card-container, li.jobs-search-results__list-item": [
+        {
+          attributes: { "data-job-id": "23" },
+          children: {
+            'a[href*="/jobs/view/"]': [
+              { attributes: { href: target.url } },
+            ],
+          },
+        },
+      ],
+    });
+    page.bodies.set(target.url, "Loading job");
+    let now = 0;
+    const { port } = createProductionPort(page, {
+      detailReadyTimeoutMs: 500,
+      now: () => now,
+      wait: async (milliseconds) => {
+        now += milliseconds;
+      },
+    });
+    const state = new MemoryStatePort();
+    const connector = new LinkedInConnector(
+      connectorConfig({ linkedinSearchUrls: [savedSearch] }),
+      state,
+      port,
+    );
+    const errorLog = vi.spyOn(console, "error").mockImplementation(() => undefined);
+
+    try {
+      await expect(connector.fetchJobs()).rejects.toThrow(
+        "[job radar linkedin] LinkedIn detail readiness timed out",
+      );
+    } finally {
+      errorLog.mockRestore();
+    }
+    expect(state.saved).toEqual([]);
   });
 
   it("logs manual login handoff and throws the exact timeout error", async () => {

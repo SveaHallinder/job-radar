@@ -97,6 +97,7 @@ export interface PlaywrightLinkedInBrowserOptions {
   now?: () => number;
   loginTimeoutMs?: number;
   searchReadyTimeoutMs?: number;
+  detailReadyTimeoutMs?: number;
 }
 
 export function withLinkedInRecency(
@@ -170,7 +171,13 @@ function tagsFromTitle(title: string): string[] {
 
 function remoteFromDetail(detail: LinkedInDetail): true | null {
   const evidence = `${detail.location}\n${detail.description}`;
-  if (/\b(?:not|non[- ]?)\s*remote\b/i.test(evidence)) return null;
+  if (
+    /\bnot\s+(?:(?:a|fully)\s+)?remote\b|\bnon[- ]?remote\b|\bhybrid\b|\bon[- ]?site\b/i.test(
+      evidence,
+    )
+  ) {
+    return null;
+  }
   return /\bremote\b|\bwork(?:ing)? from home\b/i.test(evidence) ? true : null;
 }
 
@@ -216,6 +223,7 @@ function jobUrl(value: string): string | null {
       url.protocol !== "https:" ||
       url.username ||
       url.password ||
+      url.port ||
       !isLinkedIn ||
       !/^\/jobs\/view\/[^/]+\/?$/i.test(url.pathname)
     ) {
@@ -250,6 +258,16 @@ async function firstText(
   return "";
 }
 
+async function hasAnySelector(
+  page: LinkedInPagePort,
+  selectors: readonly string[],
+): Promise<boolean> {
+  for (const selector of selectors) {
+    if ((await page.locator(selector).count()) > 0) return true;
+  }
+  return false;
+}
+
 async function firstAttribute(
   page: LinkedInPagePort,
   selectors: readonly string[],
@@ -282,6 +300,7 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     private readonly now: () => number,
     private readonly loginTimeoutMs: number,
     private readonly searchReadyTimeoutMs: number,
+    private readonly detailReadyTimeoutMs: number,
   ) {}
 
   private async currentStatus(status: number | null): Promise<PageStatus> {
@@ -336,6 +355,33 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
       const remaining = deadline - this.now();
       if (remaining <= 0) {
         throw new Error(`${ERROR_PREFIX} LinkedIn search readiness timed out`);
+      }
+      await this.wait(Math.min(250, remaining));
+    }
+  }
+
+  private async waitForDetailReady(
+    httpStatus: number | null,
+  ): Promise<"ready" | "inactive"> {
+    const deadline = this.now() + this.detailReadyTimeoutMs;
+
+    while (true) {
+      const status = await this.currentStatus(httpStatus);
+      if (status === "inactive") return "inactive";
+      this.assertAccessible(status, "detail");
+      this.assertHttpStatus(httpStatus, "detail");
+
+      if (
+        (await hasAnySelector(this.page, TITLE_SELECTORS)) &&
+        (await hasAnySelector(this.page, COMPANY_SELECTORS)) &&
+        (await hasAnySelector(this.page, DESCRIPTION_SELECTORS))
+      ) {
+        return "ready";
+      }
+
+      const remaining = deadline - this.now();
+      if (remaining <= 0) {
+        throw new Error(`${ERROR_PREFIX} LinkedIn detail readiness timed out`);
       }
       await this.wait(Math.min(250, remaining));
     }
@@ -414,11 +460,8 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     if (this.detailNavigationCompleted) await this.wait(1_500);
     const navigation = await this.navigate(reference.url);
     this.detailNavigationCompleted = true;
-    const status = navigation.pageStatus;
-    if (status === "blocked") throw new Error(BLOCKED_ERROR);
-    if (status === "login-required") throw new Error(LOGIN_REQUIRED_ERROR);
-    if (status === "inactive") return null;
-    this.assertHttpStatus(navigation.httpStatus, "detail");
+    const readiness = await this.waitForDetailReady(navigation.httpStatus);
+    if (readiness === "inactive") return null;
 
     const title = await firstText(this.page, TITLE_SELECTORS);
     const company = await firstText(this.page, COMPANY_SELECTORS);
@@ -458,6 +501,7 @@ export class PlaywrightLinkedInBrowserPort implements LinkedInBrowserPort {
   private readonly now: () => number;
   private readonly loginTimeoutMs: number;
   private readonly searchReadyTimeoutMs: number;
+  private readonly detailReadyTimeoutMs: number;
 
   constructor(
     private readonly runtime: BrowserRuntime,
@@ -470,6 +514,7 @@ export class PlaywrightLinkedInBrowserPort implements LinkedInBrowserPort {
     this.now = options.now || Date.now;
     this.loginTimeoutMs = options.loginTimeoutMs ?? 300_000;
     this.searchReadyTimeoutMs = options.searchReadyTimeoutMs ?? 10_000;
+    this.detailReadyTimeoutMs = options.detailReadyTimeoutMs ?? 10_000;
   }
 
   async run<T>(task: (session: LinkedInBrowserSession) => Promise<T>): Promise<T> {
@@ -482,6 +527,7 @@ export class PlaywrightLinkedInBrowserPort implements LinkedInBrowserPort {
         this.now,
         this.loginTimeoutMs,
         this.searchReadyTimeoutMs,
+        this.detailReadyTimeoutMs,
       );
 
       try {
