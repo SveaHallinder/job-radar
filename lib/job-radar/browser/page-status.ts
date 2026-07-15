@@ -16,6 +16,14 @@ function isLinkedInHostname(hostname: string): boolean {
   return hostname === "linkedin.com" || hostname.endsWith(".linkedin.com");
 }
 
+function isLinkedInUrl(value: string): boolean {
+  try {
+    return isLinkedInHostname(new URL(value).hostname);
+  } catch {
+    return false;
+  }
+}
+
 function isLinkedInChallengeUrl(value: string): boolean {
   try {
     const url = new URL(value);
@@ -42,16 +50,33 @@ function isLinkedInLoginUrl(value: string): boolean {
 
 function hasBlockingCopy(text: string): boolean {
   return [
-    /\bcaptcha\b/i,
+    /\b(?:complete|solve|enter) (?:the |a )?captcha\b/i,
+    /\bcaptcha (?:challenge|verification|required)\b/i,
+    /\bi(?:'m| am) not a robot\b/i,
     /\bsecurity verification (?:is )?(?:required|needed)\b/i,
     /\b(?:complete|perform) (?:a |the )?security verification\b/i,
     /\bverify (?:that )?you(?: are|'re) (?:a )?human\b/i,
-    /\bunusual traffic\b/i,
+    /\b(?:detected|noticed) unusual traffic (?:from|on)\b/i,
+    /\bunusual traffic (?:has been|was) detected\b/i,
+  ].some((pattern) => pattern.test(text));
+}
+
+function hasLinkedInAccountWarning(url: string, text: string): boolean {
+  const isLinkedInContext =
+    isLinkedInUrl(url) || /\blinkedin account\b/i.test(text);
+  if (!isLinkedInContext) return false;
+
+  return [
+    /\byour (?:linkedin )?account (?:has been|is|was) (?:temporarily |permanently )?restricted\b/i,
+    /\byour (?:linkedin )?account (?:may|could) be restricted\b/i,
+    /\bwe(?:'ve| have) (?:temporarily |permanently )?restricted your (?:linkedin )?account\b/i,
+    /\baccount restriction (?:warning|notice)\b/i,
   ].some((pattern) => pattern.test(text));
 }
 
 function hasLoginCopy(text: string): boolean {
   return [
+    /\bjoin linkedin or sign in\b/i,
     /\b(?:sign|log) in (?:to|for) (?:continue|view|see|apply|access)\b/i,
     /\b(?:sign|log) in (?:is )?required\b/i,
     /\blogga in för att (?:fortsätta|visa|se|ansöka|få åtkomst)\b/i,
@@ -61,8 +86,10 @@ function hasLoginCopy(text: string): boolean {
 
 function hasInactiveCopy(text: string): boolean {
   return [
-    /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:has expired|is expired|has closed|is closed|has been filled|is filled|was filled)\b/i,
+    /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:has expired|is expired|has closed|is closed)\b/i,
+    /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:has been filled|is filled|was filled)\b(?!\s+with\b)/i,
     /\b(?:this |the )?(?:job(?: posting)?|position|role|vacancy) (?:is |was )?no longer available\b/i,
+    /\bapplications? (?:are|is) closed\b/i,
     /\bno longer accepting applications\b/i,
     /\b(?:annonsen|jobbannonsen) har gått ut\b/i,
     /\bansökningstiden har gått ut\b/i,
@@ -85,6 +112,14 @@ function hasApplyAction(text: string): boolean {
   ].some((pattern) => pattern.test(text));
 }
 
+function parseValidThrough(value: string | null | undefined): number {
+  if (!value) return Number.NaN;
+  const timestamp = /^\d{4}-\d{2}-\d{2}$/.test(value)
+    ? `${value}T23:59:59.999Z`
+    : value;
+  return Date.parse(timestamp);
+}
+
 export function classifyPageStatus(
   snapshot: PageSnapshot,
   now = new Date(),
@@ -92,6 +127,7 @@ export function classifyPageStatus(
   if (
     snapshot.status === 429 ||
     isLinkedInChallengeUrl(snapshot.url) ||
+    hasLinkedInAccountWarning(snapshot.url, snapshot.text) ||
     hasBlockingCopy(snapshot.text)
   ) {
     return "blocked";
@@ -105,9 +141,7 @@ export function classifyPageStatus(
     return "inactive";
   }
 
-  const validThrough = snapshot.validThrough
-    ? Date.parse(snapshot.validThrough)
-    : Number.NaN;
+  const validThrough = parseValidThrough(snapshot.validThrough);
   if (Number.isFinite(validThrough) && validThrough < now.getTime()) {
     return "inactive";
   }

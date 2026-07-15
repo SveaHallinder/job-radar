@@ -55,6 +55,19 @@ describe("classifyPageStatus", () => {
   });
 
   it.each([
+    "You will improve our CAPTCHA platform. Apply now.",
+    "Build unusual traffic detection systems. Apply now.",
+  ])("does not block legitimate job copy mentioning protection terms: %s", (text) => {
+    expect(
+      classifyPageStatus({
+        status: 200,
+        url: "https://jobs.example.com/roles/123",
+        text,
+      }),
+    ).toBe("active");
+  });
+
+  it.each([
     ["LinkedIn login URL", "https://www.linkedin.com/login?fromSignIn=true", ""],
     [
       "clear English login copy",
@@ -82,6 +95,29 @@ describe("classifyPageStatus", () => {
     ).toBe("login-required");
   });
 
+  it("recognizes the LinkedIn join-or-sign-in gate before stale page copy", () => {
+    expect(
+      classifyPageStatus({
+        status: 410,
+        url: "https://www.linkedin.com/jobs/view/123",
+        text: "Join LinkedIn or sign in. This job is no longer available. Apply now.",
+      }),
+    ).toBe("login-required");
+  });
+
+  it.each([
+    "Your account has been temporarily restricted.",
+    "Warning: Your LinkedIn account may be restricted until we verify your identity.",
+  ])("classifies LinkedIn account warning copy as blocked: %s", (warning) => {
+    expect(
+      classifyPageStatus({
+        status: 410,
+        url: "https://www.linkedin.com/jobs/view/123",
+        text: `${warning} Sign in to continue. This job is no longer available. Apply now.`,
+      }),
+    ).toBe("blocked");
+  });
+
   it.each([404, 410])(
     "classifies HTTP %i as inactive even when apply copy is stale",
     (status) => {
@@ -106,6 +142,22 @@ describe("classifyPageStatus", () => {
         },
         new Date("2026-07-15T10:00:00.000Z"),
       ),
+    ).toBe("inactive");
+  });
+
+  it("keeps a date-only validThrough active through its calendar day", () => {
+    const snapshot = {
+      status: 200,
+      url: "https://jobs.example.com/roles/123",
+      text: "Apply now",
+      validThrough: "2026-07-15",
+    };
+
+    expect(
+      classifyPageStatus(snapshot, new Date("2026-07-15T23:59:59.999Z")),
+    ).toBe("active");
+    expect(
+      classifyPageStatus(snapshot, new Date("2026-07-16T00:00:00.000Z")),
     ).toBe("inactive");
   });
 
@@ -144,6 +196,29 @@ describe("classifyPageStatus", () => {
         text: `${inactiveCopy} Apply now. Ansök nu.`,
       }),
     ).toBe("inactive");
+  });
+
+  it.each(["Applications are closed", "Application is closed"])(
+    "classifies %s as inactive before stale apply copy",
+    (text) => {
+      expect(
+        classifyPageStatus({
+          status: 200,
+          url: "https://jobs.example.com/roles/123",
+          text: `${text}. Apply now.`,
+        }),
+      ).toBe("inactive");
+    },
+  );
+
+  it("does not treat non-terminal filled-position prose as inactive", () => {
+    expect(
+      classifyPageStatus({
+        status: 200,
+        url: "https://jobs.example.com/roles/123",
+        text: "This position is filled with opportunities. Apply now.",
+      }),
+    ).toBe("active");
   });
 
   it.each([
