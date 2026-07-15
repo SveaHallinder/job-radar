@@ -16,7 +16,8 @@ async function handleCron(request: Request): Promise<Response> {
   }
 
   try {
-    const summary = await syncJobs();
+    // Hosted cron has no visible browser; local browser connectors are skipped.
+    const summary = await syncJobs({ browserDiscovery: false });
     console.info("[job radar] cron sync complete", {
       status: summary.status,
       fetched: summary.fetched,

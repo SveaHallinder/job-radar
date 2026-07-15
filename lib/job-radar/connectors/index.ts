@@ -1,9 +1,14 @@
+import { getBrowserDiscoveryConfig } from "../browser/config";
+import { BrowserRuntime } from "../browser/runtime";
+import { BrowserStateStore } from "../browser/state";
 import type { JobConnector } from "../types";
 import { ArbeitnowConnector } from "./arbeitnow";
 import { GreenhouseConnector } from "./greenhouse";
 import { JobTechConnector } from "./jobtech";
 import { JoobleConnector } from "./jooble";
 import { LeverConnector } from "./lever";
+import { createLinkedInConnector } from "./linkedin";
+import { createWebDiscoveryConnector } from "./web-discovery";
 
 function parseNamedFeeds(value: string | undefined): Array<[string, string]> {
   if (!value?.trim()) return [];
@@ -42,6 +47,20 @@ export function getConnectorConfiguration(
 
   for (const [company, site] of parseNamedFeeds(env.LEVER_SITES)) {
     connectors.push(new LeverConnector(company, site));
+  }
+
+  const browserConfig = getBrowserDiscoveryConfig(env);
+  if (!browserConfig.enabled) {
+    skippedSources.push("LinkedIn · browser discovery disabled");
+    skippedSources.push("Web discovery · browser discovery disabled");
+  } else if (browserConfig.linkedinSearchUrls.length === 0) {
+    skippedSources.push("LinkedIn · missing LINKEDIN_SEARCH_URLS");
+    skippedSources.push("Web discovery · requires configured browser discovery");
+  } else {
+    const state = new BrowserStateStore(browserConfig.statePath);
+    const runtime = new BrowserRuntime(browserConfig.profilePath);
+    connectors.push(createLinkedInConnector(browserConfig, { runtime, state }));
+    connectors.push(createWebDiscoveryConnector(browserConfig, { runtime, state }));
   }
 
   return { connectors, skippedSources };

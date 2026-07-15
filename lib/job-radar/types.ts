@@ -73,6 +73,7 @@ export interface DashboardStats {
 
 export interface JobConnector {
   name: string;
+  execution?: "parallel" | "browser";
   fetchJobs(): Promise<SourceJob[]>;
 }
 

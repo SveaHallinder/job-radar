@@ -17,6 +17,7 @@ interface SyncOptions {
   repository?: JobRepository;
   clock?: () => Date;
   resolveUrl?: (url: string) => Promise<string>;
+  browserDiscovery?: boolean;
 }
 
 interface FetchedSource {
@@ -41,30 +42,53 @@ function needsRedirectResolution(job: SourceJob): boolean {
   return job.source === "Arbeitnow" || job.source === "Jooble";
 }
 
+async function fetchSource(connector: JobConnector): Promise<FetchedSource> {
+  try {
+    return { connector, jobs: await connector.fetchJobs() };
+  } catch (error) {
+    console.error(`[job radar] ${connector.name} sync failed`, error);
+    return {
+      connector,
+      jobs: [],
+      error: error instanceof Error ? error : new Error(errorMessage(error)),
+    };
+  }
+}
+
 export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> {
   const clock = options.clock ?? (() => new Date());
   const repository = options.repository ?? getJobRepository();
   const resolveUrl = options.resolveUrl ?? resolveRedirect;
+  const browserDiscovery = options.browserDiscovery ?? true;
   const configured = options.connectors
     ? { connectors: options.connectors, skippedSources: options.skippedSources ?? [] }
     : getConnectorConfiguration();
   const startedAt = clock().toISOString();
   const runId = repository.startSyncRun(startedAt);
 
-  const fetchedSources: FetchedSource[] = await Promise.all(
-    configured.connectors.map(async (connector) => {
-      try {
-        return { connector, jobs: await connector.fetchJobs() };
-      } catch (error) {
-        console.error(`[job radar] ${connector.name} sync failed`, error);
-        return {
-          connector,
-          jobs: [],
-          error: error instanceof Error ? error : new Error(errorMessage(error)),
-        };
-      }
-    }),
+  const parallelConnectors = configured.connectors.filter(
+    (connector) => connector.execution !== "browser",
   );
+  const browserConnectors = configured.connectors.filter(
+    (connector) => connector.execution === "browser",
+  );
+  const skippedSources = [...configured.skippedSources];
+  if (!browserDiscovery) {
+    for (const connector of browserConnectors) {
+      skippedSources.push(`${connector.name} · skipped in hosted environment`);
+    }
+  }
+
+  // API connectors run concurrently; browser connectors must run serially so
+  // only one visible Chromium session is active at a time.
+  const fetchedSources: FetchedSource[] = await Promise.all(
+    parallelConnectors.map(fetchSource),
+  );
+  if (browserDiscovery) {
+    for (const connector of browserConnectors) {
+      fetchedSources.push(await fetchSource(connector));
+    }
+  }
 
   const sourceResults: SourceResult[] = [];
   const sourceErrors: string[] = [];
@@ -133,7 +157,7 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
     sourceResults.push(sourceResult);
   }
 
-  for (const skippedSource of configured.skippedSources) {
+  for (const skippedSource of skippedSources) {
     sourceResults.push({
       source: skippedSource.split(" · ")[0],
       status: "skipped",

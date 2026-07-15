@@ -105,6 +105,69 @@ describe("syncJobs", () => {
     expect(repository.summary).toEqual(summary);
   });
 
+  it("runs API connectors in parallel and browser connectors serially", async () => {
+    const repository = new MemoryRepository();
+    const events: string[] = [];
+    const connector = (
+      name: string,
+      execution: "parallel" | "browser",
+    ): JobConnector => ({
+      name,
+      execution,
+      fetchJobs: async () => {
+        events.push(`${name}:start`);
+        await Promise.resolve();
+        events.push(`${name}:end`);
+        return [];
+      },
+    });
+
+    await syncJobs({
+      connectors: [
+        connector("API", "parallel"),
+        connector("LinkedIn", "browser"),
+        connector("Web discovery", "browser"),
+      ],
+      repository,
+      clock: () => new Date("2026-07-15T10:00:00.000Z"),
+      resolveUrl: async (url) => url,
+    });
+
+    expect(events.indexOf("LinkedIn:end")).toBeLessThan(
+      events.indexOf("Web discovery:start"),
+    );
+  });
+
+  it("skips browser connectors and records them when browserDiscovery is off", async () => {
+    const repository = new MemoryRepository();
+    let browserCalled = false;
+    const connectors: JobConnector[] = [
+      { name: "API", execution: "parallel", fetchJobs: async () => [] },
+      {
+        name: "LinkedIn",
+        execution: "browser",
+        fetchJobs: async () => {
+          browserCalled = true;
+          throw new Error("browser must not run in hosted cron");
+        },
+      },
+    ];
+
+    const summary = await syncJobs({
+      browserDiscovery: false,
+      connectors,
+      repository,
+      clock: () => new Date("2026-07-15T10:00:00.000Z"),
+      resolveUrl: async (url) => url,
+    });
+
+    expect(browserCalled).toBe(false);
+    const linkedin = summary.sourceResults.find(
+      (result) => result.source === "LinkedIn",
+    );
+    expect(linkedin).toMatchObject({ status: "skipped" });
+  });
+
   it("stores duplicate source records only once", async () => {
     const repository = new MemoryRepository();
     const connector: JobConnector = {
