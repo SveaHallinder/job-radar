@@ -60,12 +60,53 @@ CRON_SECRET=replace-with-a-long-random-value
 
 Jooble is optional for personal evaluation. Confirm commercial reuse and display terms with each provider before selling a hosted version.
 
+## Personal browser discovery (optional, local-only)
+
+Browser discovery adds two local connectors — a personal LinkedIn reader and a
+best-effort free web/Google search — that run in a **visible** Chromium profile
+on your own machine. It is opt-in and off by default.
+
+```bash
+npx playwright install chromium   # one-time browser download
+cp .env.example .env.local
+npm run linkedin:login            # sign in to LinkedIn by hand, then press Enter
+npm run dev
+```
+
+Enable it in `.env.local`:
+
+```dotenv
+JOB_RADAR_BROWSER_DISCOVERY=1
+# Pipe-separated LinkedIn saved-search URLs (https://www.linkedin.com/jobs/search...)
+LINKEDIN_SEARCH_URLS=https://www.linkedin.com/jobs/search/?keywords=sales|https://www.linkedin.com/jobs/search/?keywords=marketing
+```
+
+`LINKEDIN_BOOTSTRAP_MAX_RESULTS`, `LINKEDIN_INCREMENTAL_MAX_RESULTS`,
+`LINKEDIN_MAX_DETAILS`, `GOOGLE_MAX_QUERIES`, and `GOOGLE_MAX_PAGES` are optional
+hard caps with safe defaults. `JOB_RADAR_BROWSER_PROFILE_PATH` and
+`JOB_RADAR_BROWSER_STATE_PATH` default to ignored paths under `.data`; the login
+session lives in that local profile and is never committed.
+
+The first run backfills the last **7 days** on LinkedIn, then each 08:00 and
+16:00 Stockholm run only reads the last **24 hours**. Confirmed-inactive jobs are
+removed on a bounded rotating recheck; any ambiguous signal preserves the row.
+
+**Risk boundary — read before enabling.** LinkedIn and Google may block
+automation at any time. This project contains **no** CAPTCHA, rate-limit, or
+access-control bypass: it stops on a CAPTCHA, `429`, or account warning and lets
+the rest of the run continue as partial. It reads only jobs — no applications,
+messages, or profile visits. It requires an awake, logged-in Mac to run the
+visible browser, so browser discovery is **skipped entirely in hosted cron**
+(`/api/cron/sync`). It is a personal tool, not a reliable or commercial data
+source.
+
 ## Commands
 
 ```bash
 npm run dev        # dashboard on localhost
 npm run sync       # run one immediate sync in the terminal
 npm run scheduler  # keep a worker alive for 08:00 and 16:00 Stockholm time
+npm run linkedin:login  # open Chromium to sign in to LinkedIn once (opt-in browser discovery)
 npm run lint       # lint the project
 npm test           # run unit tests
 npm run build      # create a production build
