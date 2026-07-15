@@ -1,4 +1,12 @@
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { randomUUID } from "node:crypto";
+import {
+  type FileHandle,
+  mkdir,
+  open,
+  readFile,
+  rename,
+  unlink,
+} from "node:fs/promises";
 import { dirname } from "node:path";
 
 const ERROR_PREFIX = "[job radar browser]";
@@ -54,6 +62,31 @@ function hasErrorCode(error: unknown, code: string): boolean {
   );
 }
 
+async function writeAndClose(handle: FileHandle, contents: string): Promise<void> {
+  let operationError: unknown;
+  let operationFailed = false;
+
+  try {
+    await handle.writeFile(contents, "utf8");
+  } catch (error) {
+    operationError = error;
+    operationFailed = true;
+  }
+
+  try {
+    await handle.close();
+  } catch (error) {
+    if (!operationFailed) {
+      operationError = error;
+      operationFailed = true;
+    }
+  }
+
+  if (operationFailed) {
+    throw operationError;
+  }
+}
+
 export class BrowserStateStore {
   constructor(private readonly path: string) {}
 
@@ -88,16 +121,31 @@ export class BrowserStateStore {
   }
 
   async save(state: BrowserState): Promise<void> {
+    let temporaryPath: string | undefined;
+    let temporaryCreated = false;
+
     try {
+      if (!isBrowserState(state)) {
+        throw new TypeError("Browser state has an invalid shape");
+      }
+
+      const contents = `${JSON.stringify(state, null, 2)}\n`;
       await mkdir(dirname(this.path), { recursive: true });
-      const temporaryPath = `${this.path}.tmp`;
-      await writeFile(temporaryPath, `${JSON.stringify(state, null, 2)}\n`, {
-        encoding: "utf8",
-        mode: 0o600,
-      });
-      await chmod(temporaryPath, 0o600);
+      temporaryPath = `${this.path}.${randomUUID()}.tmp`;
+      const handle = await open(temporaryPath, "wx", 0o600);
+      temporaryCreated = true;
+      await writeAndClose(handle, contents);
       await rename(temporaryPath, this.path);
+      temporaryCreated = false;
     } catch (error) {
+      if (temporaryCreated && temporaryPath) {
+        try {
+          await unlink(temporaryPath);
+        } catch {
+          // Preserve the original save failure as the error cause.
+        }
+      }
+
       throw new Error(`${ERROR_PREFIX} Could not save browser state`, {
         cause: error,
       });
