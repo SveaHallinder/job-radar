@@ -289,7 +289,7 @@ export function Dashboard({ jobs, stats }: DashboardProps) {
             <p>
               {jobs.length
                 ? "Nollställ filtren för att se hela den strikt matchade listan igen."
-                : "Kör den första sökningen. JobTech och Arbeitnow fungerar direkt; fler källor aktiveras via miljövariabler."}
+                : "Kör den första sökningen. JobTech och Arbeitnow fungerar direkt; lokal LinkedIn- och webbsökning aktiveras uttryckligen via miljövariabler."}
             </p>
             {jobs.length ? (
               <button type="button" className="text-button" onClick={resetFilters}>
@@ -303,7 +303,7 @@ export function Dashboard({ jobs, stats }: DashboardProps) {
       <footer>
         <span>JOB RADAR / LOCAL MVP</span>
         <span>08:00 + 16:00 · EUROPE/STOCKHOLM</span>
-        <span>NO LINKEDIN SCRAPING</span>
+        <span>PERSONAL BROWSER DISCOVERY</span>
       </footer>
     </main>
   );

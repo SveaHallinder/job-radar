@@ -12,7 +12,8 @@
     "lint": "eslint .",
     "test": "vitest run",
     "sync": "tsx scripts/sync.ts",
-    "scheduler": "tsx scripts/scheduler.ts"
+    "scheduler": "tsx scripts/scheduler.ts",
+    "linkedin:login": "tsx scripts/linkedin-login.ts"
   },
   "dependencies": {
     "better-sqlite3": "12.11.1",
