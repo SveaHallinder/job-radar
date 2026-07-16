@@ -13,7 +13,9 @@ import {
 import {
   LinkedInConnector,
   PlaywrightLinkedInBrowserPort,
+  extractLinkedInDescription,
   mapLinkedInJob,
+  parseLinkedInTitle,
   withLinkedInRecency,
   type LinkedInBrowserPort,
   type LinkedInBrowserSession,
@@ -40,6 +42,46 @@ describe("withLinkedInRecency", () => {
     expect(result.searchParams.get("f_WT")).toBe("2");
     expect(result.searchParams.get("keywords")).toBe("growth");
     expect(result.searchParams.get("geoId")).toBe("105117694");
+  });
+});
+
+describe("parseLinkedInTitle", () => {
+  it("splits the stable title/company/LinkedIn page title", () => {
+    expect(parseLinkedInTitle("Sales Manager | SciPro | LinkedIn")).toEqual({
+      title: "Sales Manager",
+      company: "SciPro",
+    });
+  });
+
+  it("keeps the last segment as company when a title contains a pipe", () => {
+    expect(
+      parseLinkedInTitle("Growth | Marketing Lead | Northstar AB | LinkedIn"),
+    ).toEqual({ title: "Growth", company: "Northstar AB" });
+  });
+
+  it.each(["", "LinkedIn", "Just a title", "   |   | LinkedIn"])(
+    "returns null for the unparseable title %j",
+    (value) => {
+      expect(parseLinkedInTitle(value)).toBeNull();
+    },
+  );
+});
+
+describe("extractLinkedInDescription", () => {
+  it("anchors on the About the job heading", () => {
+    expect(
+      extractLinkedInDescription("Apply now\nAbout the job\nRemote contract role."),
+    ).toBe("Remote contract role.");
+  });
+
+  it("supports the Swedish heading", () => {
+    expect(extractLinkedInDescription("Om jobbet\nDistansuppdrag på konsultbasis.")).toBe(
+      "Distansuppdrag på konsultbasis.",
+    );
+  });
+
+  it("returns an empty string when no heading is present", () => {
+    expect(extractLinkedInDescription("Loading job")).toBe("");
   });
 });
 
@@ -460,6 +502,7 @@ class FakePage implements LinkedInPagePort {
   readonly navigations: string[] = [];
   readonly selectors: string[] = [];
   readonly bodies = new Map<string, string>();
+  readonly titles = new Map<string, string>();
   readonly nodes = new Map<string, Record<string, FakeDomNode[]>>();
   readonly statuses = new Map<string, number>();
   currentUrl = "about:blank";
@@ -472,6 +515,10 @@ class FakePage implements LinkedInPagePort {
 
   url(): string {
     return this.currentUrl;
+  }
+
+  async title(): Promise<string> {
+    return this.titles.get(this.currentUrl) ?? "";
   }
 
   locator(selector: string): LinkedInLocatorPort {
@@ -760,41 +807,22 @@ describe("PlaywrightLinkedInBrowserPort", () => {
     ]);
   });
 
-  it("paces between detail navigations and uses the required detail fallbacks", async () => {
+  it("paces between detail navigations and reads title plus about section", async () => {
     const page = new FakePage();
     page.bodies.set("https://www.linkedin.com/feed/", "LinkedIn feed");
     const first = reference("1");
     const second = reference("2");
-    const firstDetailNodes = {
-      ".jobs-unified-top-card__job-title": [
-        { text: "Sales Lead" },
-      ],
-      ".jobs-unified-top-card__company-name": [
-        { text: "Acme AB" },
-      ],
-      ".job-details-jobs-unified-top-card__primary-description-container .tvm__text": [
-        { text: "Remote, Sweden" },
-      ],
-      ".jobs-unified-top-card__job-insight": [
-        { text: "Contract" },
-      ],
+    page.titles.set(first.url, "Sales Lead | Acme AB | LinkedIn");
+    page.bodies.set(first.url, "Apply now\nAbout the job\nContract role.");
+    page.nodes.set(first.url, {
+      // Best-effort fields still come from (fragile) pills when present.
+      ".jobs-unified-top-card__job-insight": [{ text: "Contract" }],
       ".jobs-unified-top-card__posted-date time[datetime]": [
         { attributes: { datetime: "2026-07-15T08:00:00.000Z" } },
       ],
-      ".jobs-box__html-content": [{ text: "Contract role." }],
-    };
-    page.bodies.set(first.url, "Apply now");
-    page.nodes.set(first.url, firstDetailNodes);
-    page.bodies.set(second.url, "Apply now");
-    page.nodes.set(second.url, {
-      ".job-details-jobs-unified-top-card__job-title": [
-        { text: "Marketing Lead" },
-      ],
-      ".job-details-jobs-unified-top-card__company-name": [
-        { text: "Beta AB" },
-      ],
-      ".jobs-description-content__text": [{ text: "Second role." }],
     });
+    page.titles.set(second.url, "Marketing Lead | Beta AB | LinkedIn");
+    page.bodies.set(second.url, "About the job\nSecond role.");
     const waits: number[] = [];
     const { port } = createProductionPort(page, {
       wait: async (milliseconds) => {
@@ -811,33 +839,25 @@ describe("PlaywrightLinkedInBrowserPort", () => {
     expect(details[0]).toMatchObject({
       externalId: "1",
       title: "Sales Lead",
+      company: "Acme AB",
       description: "Contract role.",
       employmentType: "Contract",
       postedAt: "2026-07-15T08:00:00.000Z",
     });
     expect(details[1]).toMatchObject({
+      title: "Marketing Lead",
+      company: "Beta AB",
+      description: "Second role.",
       employmentType: null,
       postedAt: null,
     });
     expect(waits).toEqual([1_500]);
-    expect(page.selectors).toContain(".jobs-box__html-content");
-    expect(page.selectors).not.toContain(
-      ".jobs-description-content__text, .jobs-description__content, .jobs-box__html-content",
-    );
   });
 
   it("waits boundedly for a client-rendered detail before reading it", async () => {
     const page = new FakePage();
     const target = reference("21");
     page.bodies.set(target.url, "Loading job");
-    const delayedTitle: FakeDomNode = { text: "  " };
-    const delayedCompany: FakeDomNode = { text: "\n" };
-    const delayedDescription: FakeDomNode = { text: "\t" };
-    page.nodes.set(target.url, {
-      ".jobs-unified-top-card__job-title": [delayedTitle],
-      ".jobs-unified-top-card__company-name": [delayedCompany],
-      ".jobs-box__html-content": [delayedDescription],
-    });
     let now = 0;
     const waits: number[] = [];
     const { port } = createProductionPort(page, {
@@ -846,9 +866,8 @@ describe("PlaywrightLinkedInBrowserPort", () => {
       wait: async (milliseconds) => {
         now += milliseconds;
         waits.push(milliseconds);
-        delayedTitle.text = "Delayed Sales Lead";
-        delayedCompany.text = "Acme AB";
-        delayedDescription.text = "Delayed contract role.";
+        page.titles.set(target.url, "Delayed Sales Lead | Acme AB | LinkedIn");
+        page.bodies.set(target.url, "About the job\nDelayed contract role.");
       },
     });
 
@@ -915,12 +934,8 @@ describe("PlaywrightLinkedInBrowserPort", () => {
         },
       ],
     });
+    // Detail page never renders a parseable title or an About-the-job section.
     page.bodies.set(target.url, "Loading job");
-    page.nodes.set(target.url, {
-      ".jobs-unified-top-card__job-title": [{ text: " " }],
-      ".jobs-unified-top-card__company-name": [{ text: "\n" }],
-      ".jobs-box__html-content": [{ text: "\t" }],
-    });
     let now = 0;
     const { port } = createProductionPort(page, {
       detailReadyTimeoutMs: 500,

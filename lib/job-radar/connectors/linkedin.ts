@@ -16,20 +16,10 @@ const CARD_SELECTOR =
 const NO_RESULTS_SELECTOR =
   ".jobs-search-no-results-banner, .jobs-search-no-results-list, .jobs-search-results-list__empty-state";
 const JOB_LINK_SELECTOR = 'a[href*="/jobs/view/"]';
-const DESCRIPTION_SELECTORS = [
-  ".jobs-description-content__text",
-  ".jobs-description__content",
-  ".jobs-box__html-content",
-] as const;
-const TITLE_SELECTORS = [
-  ".job-details-jobs-unified-top-card__job-title",
-  ".jobs-unified-top-card__job-title",
-] as const;
-const COMPANY_SELECTORS = [
-  ".job-details-jobs-unified-top-card__company-name",
-  ".jobs-unified-top-card__company-name",
-  ".job-details-jobs-unified-top-card__primary-description-container a[href*='/company/']",
-] as const;
+// Current LinkedIn job pages use obfuscated, rotating CSS class names and no
+// JSON-LD, so title/company come from the stable <title> ("Job | Company |
+// LinkedIn") and the description is anchored on the visible section heading.
+const ABOUT_HEADINGS = ["about the job", "om jobbet"] as const;
 const LOCATION_SELECTORS = [
   ".job-details-jobs-unified-top-card__primary-description-container .tvm__text",
   ".jobs-unified-top-card__bullet",
@@ -89,6 +79,7 @@ export interface LinkedInPagePort {
     options?: { waitUntil: "domcontentloaded" },
   ): Promise<{ status(): number } | null>;
   url(): string;
+  title(): Promise<string>;
   locator(selector: string): LinkedInLocatorPort;
 }
 
@@ -179,6 +170,42 @@ function remoteFromDetail(detail: LinkedInDetail): true | null {
     return null;
   }
   return /\bremote\b|\bwork(?:ing)? from home\b/i.test(evidence) ? true : null;
+}
+
+/**
+ * Parses the LinkedIn job page <title>, which is stable as
+ * "{Job title} | {Company} | LinkedIn" even though the rendered DOM uses
+ * obfuscated class names. Returns null when it does not match that shape.
+ */
+export function parseLinkedInTitle(
+  pageTitle: string,
+): { title: string; company: string } | null {
+  const cleaned = pageTitle.replace(/\s*[|–-]\s*LinkedIn\s*$/i, "").trim();
+  const parts = cleaned
+    .split("|")
+    .map((part) => part.trim())
+    .filter(Boolean);
+  if (parts.length < 2) return null;
+  const title = parts[0];
+  const company = parts[parts.length - 1];
+  if (!title || !company) return null;
+  return { title, company };
+}
+
+/**
+ * Extracts the job description by anchoring on the visible section heading
+ * rather than a CSS class. Capped to keep trailing page chrome out of the
+ * matched text.
+ */
+export function extractLinkedInDescription(bodyText: string): string {
+  const lower = bodyText.toLowerCase();
+  for (const heading of ABOUT_HEADINGS) {
+    const index = lower.indexOf(heading);
+    if (index >= 0) {
+      return bodyText.slice(index + heading.length, index + heading.length + 4_000).trim();
+    }
+  }
+  return "";
 }
 
 export function mapLinkedInJob(detail: LinkedInDetail): SourceJob {
@@ -366,15 +393,21 @@ class PlaywrightLinkedInSession implements LinkedInBrowserSession {
     const deadline = this.now() + this.detailReadyTimeoutMs;
 
     while (true) {
-      const status = await this.currentStatus(httpStatus);
+      const bodyText = await this.page.locator("body").innerText();
+      const status = classifyPageStatus({
+        status: httpStatus,
+        url: this.page.url(),
+        text: bodyText,
+      });
       if (status === "inactive") return null;
       this.assertAccessible(status, "detail");
       this.assertHttpStatus(httpStatus, "detail");
 
-      const title = await firstText(this.page, TITLE_SELECTORS);
-      const company = await firstText(this.page, COMPANY_SELECTORS);
-      const description = await firstText(this.page, DESCRIPTION_SELECTORS);
-      if (title && company && description) return { title, company, description };
+      const parsed = parseLinkedInTitle(await this.page.title());
+      const description = extractLinkedInDescription(bodyText);
+      if (parsed && description) {
+        return { title: parsed.title, company: parsed.company, description };
+      }
 
       const remaining = deadline - this.now();
       if (remaining <= 0) {
