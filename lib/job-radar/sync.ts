@@ -44,6 +44,31 @@ function needsRedirectResolution(job: SourceJob): boolean {
   return job.source === "Arbeitnow" || job.source === "Jooble";
 }
 
+// Run an async mapper over items with at most `limit` calls in flight at once.
+// Results are stored by original index, so ordering is independent of which
+// task settles first.
+async function mapWithConcurrency<T, R>(
+  items: T[],
+  limit: number,
+  task: (item: T) => Promise<R>,
+): Promise<R[]> {
+  const results = new Array<R>(items.length);
+  let nextIndex = 0;
+  async function worker(): Promise<void> {
+    while (nextIndex < items.length) {
+      const current = nextIndex;
+      nextIndex += 1;
+      results[current] = await task(items[current]);
+    }
+  }
+  const workers = Array.from(
+    { length: Math.min(limit, items.length) },
+    () => worker(),
+  );
+  await Promise.all(workers);
+  return results;
+}
+
 async function fetchSource(connector: JobConnector): Promise<FetchedSource> {
   try {
     return { connector, jobs: await connector.fetchJobs() };
@@ -131,8 +156,35 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
       rejected: 0,
     };
 
-    for (const job of source.jobs) {
-      const match = matchJob(job);
+    // matchJob is pure, so compute every match up front (order-independent).
+    const matches = source.jobs.map((job) => matchJob(job));
+
+    // Resolve redirect URLs for matched jobs with bounded concurrency BEFORE the
+    // sequential dedup pass. Only matched jobs that need resolution hit the
+    // network; everything else keeps its original URL. Results are keyed by the
+    // original job index so the dedup pass below stays fully deterministic.
+    const resolvedUrls = new Array<string>(source.jobs.length);
+    const pendingIndexes: number[] = [];
+    for (let i = 0; i < source.jobs.length; i += 1) {
+      if (!matches[i].matched) continue;
+      const job = source.jobs[i];
+      if (needsRedirectResolution(job)) {
+        pendingIndexes.push(i);
+      } else {
+        resolvedUrls[i] = job.originalUrl;
+      }
+    }
+    const resolved = await mapWithConcurrency(pendingIndexes, 8, (index) =>
+      resolveUrl(source.jobs[index].originalUrl),
+    );
+    pendingIndexes.forEach((index, position) => {
+      resolvedUrls[index] = resolved[position];
+    });
+
+    // Sequential dedup/accept pass in original order using the resolved URLs.
+    for (let i = 0; i < source.jobs.length; i += 1) {
+      const job = source.jobs[i];
+      const match = matches[i];
       if (!match.matched) {
         rejected += 1;
         sourceResult.rejected += 1;
@@ -140,9 +192,7 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
         continue;
       }
 
-      const resolvedUrl = needsRedirectResolution(job)
-        ? await resolveUrl(job.originalUrl)
-        : job.originalUrl;
+      const resolvedUrl = resolvedUrls[i];
       const canonicalUrl = canonicalizeUrl(resolvedUrl);
       const fallbackKey = duplicateKey(job);
 

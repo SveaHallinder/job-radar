@@ -1,5 +1,9 @@
 import { syncJobs } from "@/lib/job-radar/sync";
 
+export const runtime = "nodejs";
+export const maxDuration = 300;
+export const dynamic = "force-dynamic";
+
 async function handleCron(request: Request): Promise<Response> {
   const secret = process.env.CRON_SECRET;
   if (!secret) {
