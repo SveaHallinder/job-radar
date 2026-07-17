@@ -93,7 +93,7 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
         skippedSources: options.skippedSources ?? [],
         activeValidator: options.activeValidator,
       }
-    : getConnectorConfiguration();
+    : await getConnectorConfiguration();
   const activeValidator = browserDiscovery
     ? (options.activeValidator ?? configured.activeValidator)
     : undefined;

@@ -116,6 +116,75 @@ describe("matchJob", () => {
     ).toMatchObject({ matched: false, rejectionReason: "Outside sales and marketing" });
   });
 
+  it("matches an accented Swedish remote contract marketing role", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Frilans Marknadsföringskonsult",
+        location: "Sverige",
+        country: "Sverige",
+        engagementType: "Konsult",
+        remote: false,
+        tags: ["Marketing"],
+        description:
+          "Vi söker en marknadsföringskonsult som kan arbeta hemifrån för försäljning och tillväxt.",
+      }),
+    ).toMatchObject({
+      matched: true,
+      category: "Marketing",
+    });
+  });
+
+  it("matches a remote freelance marketing role based only in Germany", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Freelance Marketing Manager",
+        location: "Germany",
+        country: "Germany",
+        engagementType: "Freelance",
+        remote: true,
+        tags: ["Marketing"],
+        description: "Fully remote freelance marketing role.",
+      }),
+    ).toMatchObject({
+      matched: true,
+      category: "Marketing",
+    });
+  });
+
+  it("rejects a remote contract role restricted to US based applicants", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Contract Marketing Manager",
+        location: "Remote, Europe",
+        country: null,
+        engagementType: "Contract",
+        remote: true,
+        tags: ["Marketing", "Contract"],
+        description: "Remote contract marketing role. US based applicants preferred.",
+      }),
+    ).toMatchObject({ matched: false, rejectionReason: "Outside Sweden / EMEA" });
+  });
+
+  it("still matches an eligible EMEA remote contract role (no regression)", () => {
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Freelance Marketing Consultant",
+        location: "Remote - EMEA",
+        country: null,
+        tags: ["Marketing", "Freelance"],
+        description: "Fully remote freelance contract for marketing across EMEA and Europe.",
+      }),
+    ).toMatchObject({
+      matched: true,
+      category: "Marketing",
+      matchReasons: expect.arrayContaining(["Sweden / EMEA eligible"]),
+    });
+  });
+
   it("adds Swedish as a relevance signal for an eligible role", () => {
     expect(
       matchJob({

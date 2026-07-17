@@ -15,21 +15,27 @@ const MARKETING_PATTERN =
 const SALES_PATTERN =
   /\b(sales|forsaljning|saljare|account executive|account manager|business development|bdr|sdr|partnerships manager|commercial (?:manager|director)|revenue (?:manager|director))\b/i;
 const ELIGIBLE_GEOGRAPHY_PATTERN =
-  /\b(sweden|sverige|stockholm|romania|bucharest|bucuresti|emea|europe|european union|eu|worldwide|anywhere|global(?:ly)? remote)\b/i;
+  /\b(sweden|sverige|stockholm|romania|bucharest|bucuresti|emea|europe|european union|eu|worldwide|anywhere|global(?:ly)? remote|germany|deutschland|france|spain|espana|italy|italia|netherlands|nederland|holland|poland|polska|denmark|danmark|norway|norge|finland|suomi|ireland|eire|portugal|belgium|belgie|belgique|austria|osterreich|switzerland|schweiz|czech|czechia|greece|hungary|dach|benelux|nordic|nordics|scandinavia|scandinavian|cet|cest)\b/i;
 const EXCLUDED_ONLY_PATTERN =
-  /\b(us|u\.s\.|united states|north america|canada|uk|united kingdom)\s+only\b/i;
+  /\b(us|u\.s\.|usa|united states|north america|canada|uk|united kingdom)(?:[ -]?(?:only|based)|\s+residents?)\b/i;
 const SWEDISH_PATTERN = /\b(swedish|svenska|svenskt|svensktalande)\b/i;
 
+function stripDiacritics(text: string): string {
+  return text.normalize("NFKD").replace(/[̀-ͯ]/g, "");
+}
+
 function searchableText(job: SourceJob): string {
-  return [
-    job.title,
-    job.company,
-    job.location,
-    job.country ?? "",
-    job.description,
-    job.engagementType ?? "",
-    ...job.tags,
-  ].join(" ");
+  return stripDiacritics(
+    [
+      job.title,
+      job.company,
+      job.location,
+      job.country ?? "",
+      job.description,
+      job.engagementType ?? "",
+      ...job.tags,
+    ].join(" "),
+  );
 }
 
 function classifyCategory(job: SourceJob): JobCategory | null {
@@ -78,7 +84,9 @@ export function matchJob(job: SourceJob): MatchResult {
     return { matched: false, rejectionReason: "Outside sales and marketing" };
   }
 
-  const locationText = [job.location, job.country ?? "", job.description].join(" ");
+  const locationText = stripDiacritics(
+    [job.location, job.country ?? "", job.description].join(" "),
+  );
   if (
     EXCLUDED_ONLY_PATTERN.test(locationText) ||
     !ELIGIBLE_GEOGRAPHY_PATTERN.test(locationText)
