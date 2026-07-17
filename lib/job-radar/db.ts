@@ -2,6 +2,7 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { neon } from "@neondatabase/serverless";
 
+import { CREATE_JOBS, CREATE_SYNC_RUNS } from "./schema";
 import type {
   DashboardStats,
   JobRepository,
@@ -16,11 +17,48 @@ export interface SqlExecutor {
   query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<T[]>;
 }
 
+// Both @neondatabase/serverless and pglite return an array of row objects from
+// query(), but be defensive about the node-postgres-style `{ rows }` shape too.
+function toRows<T>(result: unknown): T[] {
+  if (Array.isArray(result)) return result as T[];
+  if (result && typeof result === "object" && Array.isArray((result as { rows?: unknown }).rows)) {
+    return (result as { rows: T[] }).rows;
+  }
+  return [];
+}
+
+// Production: Neon Postgres over HTTP.
 function neonExecutor(connectionString: string): SqlExecutor {
   const sql = neon(connectionString);
   return {
-    query: <T = Record<string, unknown>>(text: string, params?: unknown[]) =>
-      sql.query(text, params ?? []) as unknown as Promise<T[]>,
+    query: async <T = Record<string, unknown>>(text: string, params?: unknown[]) =>
+      toRows<T>(await sql.query(text, params ?? [])),
+  };
+}
+
+// Local development fallback when DATABASE_URL is unset: an in-process pglite
+// (real Postgres via WASM) persisted under .data, so `npm run dev` works with
+// zero infra and data survives restarts. pglite is dynamic-imported so it never
+// enters the production serverless bundle.
+function pgliteExecutor(): SqlExecutor {
+  let ready: Promise<{ query: (text: string, params?: unknown[]) => Promise<{ rows: unknown[] }> }> | undefined;
+  const getDb = () => {
+    if (!ready) {
+      ready = (async () => {
+        const { PGlite } = await import("@electric-sql/pglite");
+        const dataDir = process.env.JOB_RADAR_PGLITE_PATH ?? ".data/pg";
+        const db = new PGlite(dataDir);
+        await db.exec(`${CREATE_JOBS};${CREATE_SYNC_RUNS};`);
+        return db;
+      })();
+    }
+    return ready;
+  };
+  return {
+    query: async <T = Record<string, unknown>>(text: string, params?: unknown[]) => {
+      const db = await getDb();
+      return toRows<T>(await db.query(text, params ?? []));
+    },
   };
 }
 
@@ -262,7 +300,8 @@ let repository: PostgresJobRepository | undefined;
 
 export function getJobRepository(): PostgresJobRepository {
   if (!repository) {
-    repository = new PostgresJobRepository(neonExecutor(process.env.DATABASE_URL!));
+    const url = process.env.DATABASE_URL;
+    repository = new PostgresJobRepository(url ? neonExecutor(url) : pgliteExecutor());
   }
 
   return repository;

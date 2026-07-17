@@ -1,8 +1,9 @@
 # Deploying Job Radar to Vercel + Neon
 
 Job Radar is designed for personal, hosted use on **Vercel** with a **Neon Postgres**
-database. The local SQLite file used in development cannot persist on serverless
-(read-only filesystem, ephemeral `/tmp`), so a hosted deploy needs a real database.
+database. Local development uses a zero-config pglite database (`.data/pg`) when
+`DATABASE_URL` is unset; a hosted serverless deploy has a read-only filesystem and
+ephemeral `/tmp`, so it needs a real managed database (Neon).
 
 Browser discovery (LinkedIn / web search via Playwright) is **local-only** and is
 never enabled on the hosted deploy — leave all `JOB_RADAR_BROWSER_DISCOVERY` /
