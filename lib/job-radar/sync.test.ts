@@ -15,36 +15,36 @@ class MemoryRepository implements JobRepository {
   deleted: string[] = [];
   summary: SyncSummary | null = null;
 
-  startSyncRun(): string {
+  async startSyncRun(): Promise<string> {
     return "run-1";
   }
 
-  upsertJob(job: MatchedJob): "created" | "updated" {
+  async upsertJob(job: MatchedJob): Promise<"created" | "updated"> {
     this.saved.push(job);
     return "created";
   }
 
-  deleteJobBySourceId(source: string, externalId: string): void {
+  async deleteJobBySourceId(source: string, externalId: string): Promise<void> {
     this.deleted.push(`${source}:${externalId}`);
   }
 
-  listJobsForValidation(): StoredJob[] {
+  async listJobsForValidation(): Promise<StoredJob[]> {
     return [];
   }
 
-  deleteJobById(id: string): void {
+  async deleteJobById(id: string): Promise<void> {
     this.deleted.push(id);
   }
 
-  finishSyncRun(summary: SyncSummary): void {
+  async finishSyncRun(summary: SyncSummary): Promise<void> {
     this.summary = summary;
   }
 
-  listJobs(): StoredJob[] {
+  async listJobs(): Promise<StoredJob[]> {
     return [];
   }
 
-  getDashboardStats(): DashboardStats {
+  async getDashboardStats(): Promise<DashboardStats> {
     return { totalJobs: this.saved.length, newJobs: this.saved.length, lastRun: this.summary };
   }
 }

@@ -32,14 +32,14 @@ export async function validateActiveJobs(
   limit = 50,
 ): Promise<ActiveValidationResult> {
   const state = await stateStore.load();
-  let jobs = repository.listJobsForValidation(
+  let jobs = await repository.listJobsForValidation(
     [...VALIDATION_SOURCES],
     state.validationCursor,
     limit,
   );
   if (jobs.length === 0 && state.validationCursor) {
     // Cursor reached the end; wrap around to the start of the rotation.
-    jobs = repository.listJobsForValidation([...VALIDATION_SOURCES], null, limit);
+    jobs = await repository.listJobsForValidation([...VALIDATION_SOURCES], null, limit);
   }
 
   let deleted = 0;
@@ -48,7 +48,7 @@ export async function validateActiveJobs(
     try {
       const status = classifyPageStatus(await loadPage(job.originalUrl));
       if (status === "inactive") {
-        repository.deleteJobById(job.id);
+        await repository.deleteJobById(job.id);
         deleted += 1;
       } else if (status !== "active") {
         unknown += 1;

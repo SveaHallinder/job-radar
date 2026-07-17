@@ -1,8 +1,6 @@
 import { createHash, randomUUID } from "node:crypto";
-import { mkdirSync } from "node:fs";
-import { dirname, resolve } from "node:path";
 
-import Database from "better-sqlite3";
+import { neon } from "@neondatabase/serverless";
 
 import type {
   DashboardStats,
@@ -13,6 +11,18 @@ import type {
   SyncStatus,
   SyncSummary,
 } from "./types";
+
+export interface SqlExecutor {
+  query<T = Record<string, unknown>>(text: string, params?: unknown[]): Promise<T[]>;
+}
+
+function neonExecutor(connectionString: string): SqlExecutor {
+  const sql = neon(connectionString);
+  return {
+    query: <T = Record<string, unknown>>(text: string, params?: unknown[]) =>
+      sql.query(text, params ?? []) as unknown as Promise<T[]>,
+  };
+}
 
 interface JobRow {
   id: string;
@@ -28,7 +38,7 @@ interface JobRow {
   description: string;
   category: "Sales" | "Marketing";
   engagement_type: string;
-  remote: number | null;
+  remote: boolean | null;
   tags_json: string;
   match_reasons_json: string;
   posted_at: string | null;
@@ -75,7 +85,7 @@ function mapJobRow(row: JobRow): StoredJob {
     category: row.category,
     normalizedEngagementType: row.engagement_type,
     engagementType: row.engagement_type,
-    remote: row.remote === null ? null : row.remote === 1,
+    remote: row.remote,
     tags: parseJsonArray<string>(row.tags_json),
     matchReasons: parseJsonArray<string>(row.match_reasons_json),
     postedAt: row.posted_at,
@@ -100,217 +110,159 @@ function mapSyncRow(row: SyncRow): SyncSummary {
   };
 }
 
-export class SqliteJobRepository implements JobRepository {
-  private readonly database: Database.Database;
+export class PostgresJobRepository implements JobRepository {
+  constructor(private readonly exec: SqlExecutor) {}
 
-  constructor(databasePath: string) {
-    mkdirSync(dirname(databasePath), { recursive: true });
-    this.database = new Database(databasePath);
-    this.database.pragma("journal_mode = WAL");
-    this.database.exec(`
-      CREATE TABLE IF NOT EXISTS jobs (
-        id TEXT PRIMARY KEY,
-        canonical_url TEXT NOT NULL UNIQUE,
-        source TEXT NOT NULL,
-        external_id TEXT NOT NULL,
-        source_url TEXT NOT NULL,
-        original_url TEXT NOT NULL,
-        title TEXT NOT NULL,
-        company TEXT NOT NULL,
-        location TEXT NOT NULL,
-        country TEXT,
-        description TEXT NOT NULL,
-        category TEXT NOT NULL,
-        engagement_type TEXT NOT NULL,
-        remote INTEGER,
-        tags_json TEXT NOT NULL,
-        match_reasons_json TEXT NOT NULL,
-        posted_at TEXT,
-        first_seen_at TEXT NOT NULL,
-        last_seen_at TEXT NOT NULL
-      );
-
-      CREATE TABLE IF NOT EXISTS sync_runs (
-        run_id TEXT PRIMARY KEY,
-        status TEXT NOT NULL,
-        started_at TEXT NOT NULL,
-        completed_at TEXT,
-        fetched INTEGER NOT NULL DEFAULT 0,
-        accepted INTEGER NOT NULL DEFAULT 0,
-        rejected INTEGER NOT NULL DEFAULT 0,
-        new_jobs INTEGER NOT NULL DEFAULT 0,
-        updated_jobs INTEGER NOT NULL DEFAULT 0,
-        source_results_json TEXT NOT NULL DEFAULT '[]',
-        source_errors_json TEXT NOT NULL DEFAULT '[]'
-      );
-    `);
-  }
-
-  startSyncRun(startedAt: string): string {
+  async startSyncRun(startedAt: string): Promise<string> {
     const runId = randomUUID();
-    this.database
-      .prepare("INSERT INTO sync_runs (run_id, status, started_at) VALUES (?, 'failed', ?)")
-      .run(runId, startedAt);
+    await this.exec.query(
+      "INSERT INTO sync_runs (run_id, status, started_at) VALUES ($1, 'failed', $2)",
+      [runId, startedAt],
+    );
     return runId;
   }
 
-  upsertJob(job: MatchedJob, seenAt: string): "created" | "updated" {
-    const existing = this.database
-      .prepare("SELECT id FROM jobs WHERE canonical_url = ?")
-      .get(job.canonicalUrl) as { id: string } | undefined;
-    const values = {
-      id:
-        existing?.id ||
-        createHash("sha256").update(job.canonicalUrl).digest("hex").slice(0, 20),
-      canonicalUrl: job.canonicalUrl,
-      source: job.source,
-      externalId: job.externalId,
-      sourceUrl: job.sourceUrl,
-      originalUrl: job.originalUrl,
-      title: job.title,
-      company: job.company,
-      location: job.location,
-      country: job.country,
-      description: job.description.slice(0, 1_200),
-      category: job.category,
-      engagementType: job.normalizedEngagementType,
-      remote: job.remote === null ? null : job.remote ? 1 : 0,
-      tagsJson: JSON.stringify(job.tags),
-      matchReasonsJson: JSON.stringify(job.matchReasons),
-      postedAt: job.postedAt,
+  async upsertJob(job: MatchedJob, seenAt: string): Promise<"created" | "updated"> {
+    const id = createHash("sha256").update(job.canonicalUrl).digest("hex").slice(0, 20);
+    const params = [
+      id,
+      job.canonicalUrl,
+      job.source,
+      job.externalId,
+      job.sourceUrl,
+      job.originalUrl,
+      job.title,
+      job.company,
+      job.location,
+      job.country,
+      job.description.slice(0, 1_200),
+      job.category,
+      job.normalizedEngagementType,
+      job.remote === null ? null : job.remote,
+      JSON.stringify(job.tags),
+      JSON.stringify(job.matchReasons),
+      job.postedAt,
       seenAt,
-    };
+    ];
 
-    if (existing) {
-      this.database
-        .prepare(`
-          UPDATE jobs SET
-            source = @source,
-            external_id = @externalId,
-            source_url = @sourceUrl,
-            original_url = @originalUrl,
-            title = @title,
-            company = @company,
-            location = @location,
-            country = @country,
-            description = @description,
-            category = @category,
-            engagement_type = @engagementType,
-            remote = @remote,
-            tags_json = @tagsJson,
-            match_reasons_json = @matchReasonsJson,
-            posted_at = @postedAt,
-            last_seen_at = @seenAt
-          WHERE id = @id
-        `)
-        .run(values);
-      return "updated";
-    }
+    const rows = await this.exec.query<{ inserted: boolean }>(
+      `INSERT INTO jobs (
+        id, canonical_url, source, external_id, source_url, original_url,
+        title, company, location, country, description, category,
+        engagement_type, remote, tags_json, match_reasons_json, posted_at,
+        first_seen_at, last_seen_at
+      ) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$18)
+      ON CONFLICT (canonical_url) DO UPDATE SET
+        source=EXCLUDED.source,
+        external_id=EXCLUDED.external_id,
+        source_url=EXCLUDED.source_url,
+        original_url=EXCLUDED.original_url,
+        title=EXCLUDED.title,
+        company=EXCLUDED.company,
+        location=EXCLUDED.location,
+        country=EXCLUDED.country,
+        description=EXCLUDED.description,
+        category=EXCLUDED.category,
+        engagement_type=EXCLUDED.engagement_type,
+        remote=EXCLUDED.remote,
+        tags_json=EXCLUDED.tags_json,
+        match_reasons_json=EXCLUDED.match_reasons_json,
+        posted_at=EXCLUDED.posted_at,
+        last_seen_at=EXCLUDED.last_seen_at
+      RETURNING (xmax = 0) AS inserted`,
+      params,
+    );
 
-    this.database
-      .prepare(`
-        INSERT INTO jobs (
-          id, canonical_url, source, external_id, source_url, original_url,
-          title, company, location, country, description, category,
-          engagement_type, remote, tags_json, match_reasons_json, posted_at,
-          first_seen_at, last_seen_at
-        ) VALUES (
-          @id, @canonicalUrl, @source, @externalId, @sourceUrl, @originalUrl,
-          @title, @company, @location, @country, @description, @category,
-          @engagementType, @remote, @tagsJson, @matchReasonsJson, @postedAt,
-          @seenAt, @seenAt
-        )
-      `)
-      .run(values);
-    return "created";
+    return rows[0].inserted ? "created" : "updated";
   }
 
-  deleteJobBySourceId(source: string, externalId: string): void {
-    this.database
-      .prepare("DELETE FROM jobs WHERE source = ? AND external_id = ?")
-      .run(source, externalId);
+  async deleteJobBySourceId(source: string, externalId: string): Promise<void> {
+    await this.exec.query("DELETE FROM jobs WHERE source = $1 AND external_id = $2", [
+      source,
+      externalId,
+    ]);
   }
 
-  listJobsForValidation(
+  async listJobsForValidation(
     sources: string[],
     afterId: string | null,
     limit: number,
-  ): StoredJob[] {
+  ): Promise<StoredJob[]> {
     if (sources.length === 0) return [];
-    const placeholders = sources.map(() => "?").join(", ");
-    const cursorClause = afterId ? " AND id > ?" : "";
-    const params: (string | number)[] = [...sources];
-    if (afterId) params.push(afterId);
-    params.push(limit);
-    const rows = this.database
-      .prepare(
-        `SELECT * FROM jobs WHERE source IN (${placeholders})${cursorClause} ORDER BY id ASC LIMIT ?`,
-      )
-      .all(...params) as JobRow[];
+    const cursorClause = afterId ? " AND id > $2" : "";
+    const limitIndex = afterId ? 3 : 2;
+    const text =
+      "SELECT * FROM jobs WHERE source = ANY($1)" +
+      cursorClause +
+      " ORDER BY id ASC LIMIT $" +
+      limitIndex;
+    const params = afterId ? [sources, afterId, limit] : [sources, limit];
+    const rows = await this.exec.query<JobRow>(text, params);
     return rows.map(mapJobRow);
   }
 
-  deleteJobById(id: string): void {
-    this.database.prepare("DELETE FROM jobs WHERE id = ?").run(id);
+  async deleteJobById(id: string): Promise<void> {
+    await this.exec.query("DELETE FROM jobs WHERE id = $1", [id]);
   }
 
-  finishSyncRun(summary: SyncSummary): void {
-    this.database
-      .prepare(`
-        UPDATE sync_runs SET
-          status = @status,
-          completed_at = @completedAt,
-          fetched = @fetched,
-          accepted = @accepted,
-          rejected = @rejected,
-          new_jobs = @newJobs,
-          updated_jobs = @updatedJobs,
-          source_results_json = @sourceResultsJson,
-          source_errors_json = @sourceErrorsJson
-        WHERE run_id = @runId
-      `)
-      .run({
-        ...summary,
-        sourceResultsJson: JSON.stringify(summary.sourceResults),
-        sourceErrorsJson: JSON.stringify(summary.sourceErrors),
-      });
+  async finishSyncRun(summary: SyncSummary): Promise<void> {
+    await this.exec.query(
+      `UPDATE sync_runs SET
+        status=$1,
+        completed_at=$2,
+        fetched=$3,
+        accepted=$4,
+        rejected=$5,
+        new_jobs=$6,
+        updated_jobs=$7,
+        source_results_json=$8,
+        source_errors_json=$9
+      WHERE run_id=$10`,
+      [
+        summary.status,
+        summary.completedAt,
+        summary.fetched,
+        summary.accepted,
+        summary.rejected,
+        summary.newJobs,
+        summary.updatedJobs,
+        JSON.stringify(summary.sourceResults),
+        JSON.stringify(summary.sourceErrors),
+        summary.runId,
+      ],
+    );
   }
 
-  listJobs(): StoredJob[] {
-    const rows = this.database
-      .prepare(
-        "SELECT * FROM jobs ORDER BY COALESCE(posted_at, first_seen_at) DESC, first_seen_at DESC",
-      )
-      .all() as JobRow[];
+  async listJobs(): Promise<StoredJob[]> {
+    const rows = await this.exec.query<JobRow>(
+      "SELECT * FROM jobs ORDER BY COALESCE(posted_at, first_seen_at) DESC, first_seen_at DESC",
+    );
     return rows.map(mapJobRow);
   }
 
-  getDashboardStats(): DashboardStats {
-    const count = this.database.prepare("SELECT COUNT(*) AS count FROM jobs").get() as {
-      count: number;
-    };
-    const lastRun = this.database
-      .prepare(
-        "SELECT * FROM sync_runs WHERE completed_at IS NOT NULL ORDER BY started_at DESC LIMIT 1",
-      )
-      .get() as SyncRow | undefined;
+  async getDashboardStats(): Promise<DashboardStats> {
+    const countRows = await this.exec.query<{ count: string | number }>(
+      "SELECT COUNT(*) AS count FROM jobs",
+    );
+    const totalJobs = Number(countRows[0].count);
+    const lastRunRows = await this.exec.query<SyncRow>(
+      "SELECT * FROM sync_runs WHERE completed_at IS NOT NULL ORDER BY started_at DESC LIMIT 1",
+    );
+    const lastRun = lastRunRows[0];
 
     return {
-      totalJobs: count.count,
+      totalJobs,
       newJobs: lastRun?.new_jobs ?? 0,
       lastRun: lastRun ? mapSyncRow(lastRun) : null,
     };
   }
 }
 
-let repository: SqliteJobRepository | undefined;
+let repository: PostgresJobRepository | undefined;
 
-export function getJobRepository(): SqliteJobRepository {
+export function getJobRepository(): PostgresJobRepository {
   if (!repository) {
-    const databasePath = process.env.JOB_RADAR_DB_PATH
-      ? resolve(process.env.JOB_RADAR_DB_PATH)
-      : resolve(process.cwd(), ".data", "job-radar.sqlite");
-    repository = new SqliteJobRepository(databasePath);
+    repository = new PostgresJobRepository(neonExecutor(process.env.DATABASE_URL!));
   }
 
   return repository;

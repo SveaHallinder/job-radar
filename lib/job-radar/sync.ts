@@ -73,7 +73,7 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
     ? (options.activeValidator ?? configured.activeValidator)
     : undefined;
   const startedAt = clock().toISOString();
-  const runId = repository.startSyncRun(startedAt);
+  const runId = await repository.startSyncRun(startedAt);
 
   const parallelConnectors = configured.connectors.filter(
     (connector) => connector.execution !== "browser",
@@ -136,7 +136,7 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
       if (!match.matched) {
         rejected += 1;
         sourceResult.rejected += 1;
-        repository.deleteJobBySourceId(job.source, job.externalId);
+        await repository.deleteJobBySourceId(job.source, job.externalId);
         continue;
       }
 
@@ -180,7 +180,7 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
   let newJobs = 0;
   let updatedJobs = 0;
   for (const job of acceptedJobs) {
-    const result = repository.upsertJob(job, startedAt);
+    const result = await repository.upsertJob(job, startedAt);
     if (result === "created") newJobs += 1;
     else updatedJobs += 1;
   }
@@ -229,6 +229,6 @@ export async function syncJobs(options: SyncOptions = {}): Promise<SyncSummary> 
     sourceErrors,
   };
 
-  repository.finishSyncRun(summary);
+  await repository.finishSyncRun(summary);
   return summary;
 }
