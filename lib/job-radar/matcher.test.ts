@@ -135,6 +135,26 @@ describe("matchJob", () => {
     });
   });
 
+  it("classifies a standalone accented Swedish category word without a category tag", () => {
+    // "Försäljning" as a standalone word only matches the ASCII "forsaljning"
+    // pattern once diacritics are stripped in classifyCategory.
+    expect(
+      matchJob({
+        ...baseJob,
+        title: "Försäljning Specialist",
+        location: "Sverige",
+        country: "Sverige",
+        engagementType: "Konsult",
+        remote: true,
+        tags: ["Remote"],
+        description: "Distansuppdrag för en självständig konsult.",
+      }),
+    ).toMatchObject({
+      matched: true,
+      category: "Sales",
+    });
+  });
+
   it("matches a remote freelance marketing role based only in Germany", () => {
     expect(
       matchJob({

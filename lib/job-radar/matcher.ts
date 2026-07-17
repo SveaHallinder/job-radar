@@ -39,7 +39,7 @@ function searchableText(job: SourceJob): string {
 }
 
 function classifyCategory(job: SourceJob): JobCategory | null {
-  const titleAndTags = [job.title, ...job.tags].join(" ");
+  const titleAndTags = stripDiacritics([job.title, ...job.tags].join(" "));
 
   if (MARKETING_PATTERN.test(titleAndTags)) {
     return "Marketing";
@@ -69,10 +69,12 @@ export function matchJob(job: SourceJob): MatchResult {
     return { matched: false, rejectionReason: "Not fully remote" };
   }
 
-  const contractSignalText = [job.title, job.engagementType ?? "", ...job.tags].join(" ");
+  const contractSignalText = stripDiacritics(
+    [job.title, job.engagementType ?? "", ...job.tags].join(" "),
+  );
   const hasContractEngagement =
     CONTRACT_ROLE_PATTERN.test(contractSignalText) ||
-    CONTRACT_DESCRIPTION_PATTERN.test(job.description) ||
+    CONTRACT_DESCRIPTION_PATTERN.test(stripDiacritics(job.description)) ||
     B2B_ENGAGEMENT_PATTERN.test(allText);
 
   if (!hasContractEngagement) {
