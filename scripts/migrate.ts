@@ -1,7 +1,11 @@
 import { neon } from "@neondatabase/serverless";
 import { loadEnvConfig } from "@next/env";
 
-import { CREATE_JOBS, CREATE_SYNC_RUNS } from "../lib/job-radar/schema";
+import {
+  CREATE_JOBS,
+  CREATE_SYNC_REQUESTS,
+  CREATE_SYNC_RUNS,
+} from "../lib/job-radar/schema";
 
 loadEnvConfig(process.cwd());
 
@@ -17,8 +21,9 @@ async function migrate(): Promise<void> {
   // as its own call.
   await sql.query(CREATE_JOBS);
   await sql.query(CREATE_SYNC_RUNS);
+  await sql.query(CREATE_SYNC_REQUESTS);
 
-  console.info("[job radar] migration complete: jobs, sync_runs");
+  console.info("[job radar] migration complete: jobs, sync_runs, sync_requests");
 }
 
 migrate().catch((error: unknown) => {

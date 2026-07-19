@@ -7,6 +7,8 @@ import type {
   JobRepository,
   MatchedJob,
   StoredJob,
+  SyncRequest,
+  SyncRequestKind,
   SyncSummary,
 } from "./types";
 
@@ -45,8 +47,39 @@ class MemoryRepository implements JobRepository {
   }
 
   async getDashboardStats(): Promise<DashboardStats> {
-    return { totalJobs: this.saved.length, newJobs: this.saved.length, lastRun: this.summary };
+    return {
+      totalJobs: this.saved.length,
+      newJobs: this.saved.length,
+      lastRun: this.summary,
+      latestBrowserRequest: null,
+    };
   }
+
+  async requestBrowserSync(
+    kind: SyncRequestKind,
+    requestedAt: string,
+  ): Promise<SyncRequest> {
+    return {
+      id: "req-1",
+      kind,
+      status: "pending",
+      requestedAt,
+      startedAt: null,
+      completedAt: null,
+      runId: null,
+      message: null,
+    };
+  }
+
+  async getLatestBrowserRequest(): Promise<SyncRequest | null> {
+    return null;
+  }
+
+  async claimNextBrowserRequest(): Promise<SyncRequest | null> {
+    return null;
+  }
+
+  async completeBrowserRequest(): Promise<void> {}
 }
 
 const matchingJob = {

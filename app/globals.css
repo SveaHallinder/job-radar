@@ -267,10 +267,23 @@ h1 em {
   border-bottom: 1px solid var(--line);
 }
 
-.sync-form,
+.sync-cluster,
 .stat-cell {
   min-width: 0;
   border-right: 1px solid var(--line);
+}
+
+.sync-cluster {
+  padding: 20px 24px;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 14px;
+}
+
+.sync-cluster .sync-form {
+  padding: 0;
+  border-right: 0;
 }
 
 .sync-form {
@@ -301,6 +314,29 @@ h1 em {
 .sync-button:disabled {
   cursor: wait;
   opacity: 0.75;
+}
+
+.sync-cluster .sync-button {
+  height: 58px;
+  padding: 0 20px;
+}
+
+.sync-button.secondary {
+  background: var(--paper);
+  color: var(--ink);
+}
+
+.sync-button.secondary:hover:not(:disabled) {
+  background: var(--ink);
+  color: var(--white);
+}
+
+.sync-caption {
+  display: block;
+  font-size: 12px;
+  line-height: 1.4;
+  color: var(--muted);
+  letter-spacing: 0.01em;
 }
 
 .sync-icon {
@@ -799,7 +835,7 @@ footer {
     grid-template-columns: repeat(3, 1fr);
   }
 
-  .sync-form {
+  .sync-cluster {
     grid-column: 1 / -1;
     border-right: 0;
     border-bottom: 1px solid var(--line);
@@ -865,7 +901,7 @@ footer {
     grid-template-columns: 1fr 1fr;
   }
 
-  .sync-form,
+  .sync-cluster,
   .last-run-cell {
     grid-column: 1 / -1;
   }

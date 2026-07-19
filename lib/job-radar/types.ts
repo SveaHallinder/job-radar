@@ -69,6 +69,22 @@ export interface DashboardStats {
   totalJobs: number;
   newJobs: number;
   lastRun: SyncSummary | null;
+  latestBrowserRequest: SyncRequest | null;
+}
+
+export type SyncRequestKind = "linkedin";
+
+export type SyncRequestStatus = "pending" | "running" | "done" | "failed";
+
+export interface SyncRequest {
+  id: string;
+  kind: SyncRequestKind;
+  status: SyncRequestStatus;
+  requestedAt: string;
+  startedAt: string | null;
+  completedAt: string | null;
+  runId: string | null;
+  message: string | null;
 }
 
 export interface JobConnector {
@@ -90,4 +106,17 @@ export interface JobRepository {
   finishSyncRun(summary: SyncSummary): Promise<void>;
   listJobs(): Promise<StoredJob[]>;
   getDashboardStats(): Promise<DashboardStats>;
+  // Browser-sync request queue (button → local worker).
+  requestBrowserSync(kind: SyncRequestKind, requestedAt: string): Promise<SyncRequest>;
+  getLatestBrowserRequest(kind: SyncRequestKind): Promise<SyncRequest | null>;
+  claimNextBrowserRequest(
+    kind: SyncRequestKind,
+    startedAt: string,
+  ): Promise<SyncRequest | null>;
+  completeBrowserRequest(
+    id: string,
+    status: Extract<SyncRequestStatus, "done" | "failed">,
+    completedAt: string,
+    details: { runId?: string | null; message?: string | null },
+  ): Promise<void>;
 }
