@@ -1,8 +1,10 @@
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
+
+import { PGlite } from "@electric-sql/pglite";
 
 import { validateActiveJobs } from "./active-validation";
 import { EMPTY_BROWSER_STATE, type BrowserState } from "./browser/state";
-import { SqliteJobRepository } from "./db";
+import { PostgresJobRepository, type SqlExecutor } from "./db";
 import type {
   DashboardStats,
   JobRepository,
@@ -37,31 +39,31 @@ class MemoryRepository implements JobRepository {
   validationJobs: StoredJob[] = [];
   deletedIds: string[] = [];
 
-  startSyncRun(): string {
+  async startSyncRun(): Promise<string> {
     return "run-1";
   }
-  upsertJob(): "created" | "updated" {
+  async upsertJob(): Promise<"created" | "updated"> {
     return "created";
   }
-  deleteJobBySourceId(): void {}
-  listJobsForValidation(
+  async deleteJobBySourceId(): Promise<void> {}
+  async listJobsForValidation(
     sources: string[],
     afterId: string | null,
     limit: number,
-  ): StoredJob[] {
+  ): Promise<StoredJob[]> {
     return this.validationJobs
       .filter((job) => sources.includes(job.source))
       .filter((job) => (afterId ? job.id > afterId : true))
       .slice(0, limit);
   }
-  deleteJobById(id: string): void {
+  async deleteJobById(id: string): Promise<void> {
     this.deletedIds.push(id);
   }
-  finishSyncRun(): void {}
-  listJobs(): StoredJob[] {
+  async finishSyncRun(): Promise<void> {}
+  async listJobs(): Promise<StoredJob[]> {
     return [];
   }
-  getDashboardStats(): DashboardStats {
+  async getDashboardStats(): Promise<DashboardStats> {
     return { totalJobs: 0, newJobs: 0, lastRun: null };
   }
 }
@@ -120,7 +122,60 @@ describe("validateActiveJobs", () => {
   });
 });
 
-describe("SqliteJobRepository validation queries", () => {
+const CREATE_JOBS = `
+  CREATE TABLE IF NOT EXISTS jobs (
+    id TEXT PRIMARY KEY,
+    canonical_url TEXT NOT NULL UNIQUE,
+    source TEXT NOT NULL,
+    external_id TEXT NOT NULL,
+    source_url TEXT NOT NULL,
+    original_url TEXT NOT NULL,
+    title TEXT NOT NULL,
+    company TEXT NOT NULL,
+    location TEXT NOT NULL,
+    country TEXT,
+    description TEXT NOT NULL,
+    category TEXT NOT NULL,
+    engagement_type TEXT NOT NULL,
+    remote BOOLEAN,
+    tags_json TEXT NOT NULL,
+    match_reasons_json TEXT NOT NULL,
+    posted_at TEXT,
+    first_seen_at TEXT NOT NULL,
+    last_seen_at TEXT NOT NULL
+  )
+`;
+
+const CREATE_SYNC_RUNS = `
+  CREATE TABLE IF NOT EXISTS sync_runs (
+    run_id TEXT PRIMARY KEY,
+    status TEXT NOT NULL,
+    started_at TEXT NOT NULL,
+    completed_at TEXT,
+    fetched INTEGER NOT NULL DEFAULT 0,
+    accepted INTEGER NOT NULL DEFAULT 0,
+    rejected INTEGER NOT NULL DEFAULT 0,
+    new_jobs INTEGER NOT NULL DEFAULT 0,
+    updated_jobs INTEGER NOT NULL DEFAULT 0,
+    source_results_json TEXT NOT NULL DEFAULT '[]',
+    source_errors_json TEXT NOT NULL DEFAULT '[]'
+  )
+`;
+
+describe("PostgresJobRepository validation queries", () => {
+  let repository: PostgresJobRepository;
+
+  beforeEach(async () => {
+    const db = new PGlite();
+    await db.query(CREATE_JOBS);
+    await db.query(CREATE_SYNC_RUNS);
+    const exec: SqlExecutor = {
+      query: async <T = Record<string, unknown>>(text: string, params?: unknown[]) =>
+        (await db.query<T>(text, params ?? [])).rows,
+    };
+    repository = new PostgresJobRepository(exec);
+  });
+
   function matchedJob(source: string, slug: string): MatchedJob {
     return {
       source,
@@ -143,14 +198,13 @@ describe("SqliteJobRepository validation queries", () => {
     };
   }
 
-  it("lists only browser sources in id order and deletes a single row", () => {
-    const repository = new SqliteJobRepository(":memory:");
+  it("lists only browser sources in id order and deletes a single row", async () => {
     const seenAt = "2026-07-15T08:00:00.000Z";
-    repository.upsertJob(matchedJob("JobTech", "jobtech-1"), seenAt);
-    repository.upsertJob(matchedJob("LinkedIn", "linkedin-1"), seenAt);
-    repository.upsertJob(matchedJob("Web discovery", "web-1"), seenAt);
+    await repository.upsertJob(matchedJob("JobTech", "jobtech-1"), seenAt);
+    await repository.upsertJob(matchedJob("LinkedIn", "linkedin-1"), seenAt);
+    await repository.upsertJob(matchedJob("Web discovery", "web-1"), seenAt);
 
-    const rows = repository.listJobsForValidation(
+    const rows = await repository.listJobsForValidation(
       ["LinkedIn", "Web discovery"],
       null,
       50,
@@ -164,8 +218,8 @@ describe("SqliteJobRepository validation queries", () => {
     const ids = rows.map((row) => row.id);
     expect([...ids].sort()).toEqual(ids);
 
-    repository.deleteJobById(rows[0].id);
-    const remaining = repository.listJobsForValidation(
+    await repository.deleteJobById(rows[0].id);
+    const remaining = await repository.listJobsForValidation(
       ["LinkedIn", "Web discovery"],
       null,
       50,

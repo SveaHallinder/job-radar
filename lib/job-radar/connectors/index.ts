@@ -4,7 +4,6 @@ import {
 } from "../active-validation";
 import { getBrowserDiscoveryConfig } from "../browser/config";
 import type { PageSnapshot } from "../browser/page-status";
-import { BrowserRuntime } from "../browser/runtime";
 import { BrowserStateStore } from "../browser/state";
 import type { JobConnector } from "../types";
 import { ArbeitnowConnector } from "./arbeitnow";
@@ -12,8 +11,6 @@ import { GreenhouseConnector } from "./greenhouse";
 import { JobTechConnector } from "./jobtech";
 import { JoobleConnector } from "./jooble";
 import { LeverConnector } from "./lever";
-import { createLinkedInConnector } from "./linkedin";
-import { createWebDiscoveryConnector } from "./web-discovery";
 
 function parseNamedFeeds(value: string | undefined): Array<[string, string]> {
   if (!value?.trim()) return [];
@@ -35,9 +32,9 @@ export interface ConnectorConfiguration {
   activeValidator?: ActiveValidator;
 }
 
-export function getConnectorConfiguration(
+export async function getConnectorConfiguration(
   env: NodeJS.ProcessEnv = process.env,
-): ConnectorConfiguration {
+): Promise<ConnectorConfiguration> {
   const connectors: JobConnector[] = [new JobTechConnector(), new ArbeitnowConnector()];
   const skippedSources: string[] = [];
 
@@ -64,6 +61,12 @@ export function getConnectorConfiguration(
     skippedSources.push("LinkedIn · missing LINKEDIN_SEARCH_URLS");
     skippedSources.push("Web discovery · requires configured browser discovery");
   } else {
+    // Lazy-import the browser modules so the Playwright dependency they pull in
+    // (via BrowserRuntime) stays out of the serverless bundle when browser
+    // discovery is disabled — the only environment that reaches this branch.
+    const { BrowserRuntime } = await import("../browser/runtime");
+    const { createLinkedInConnector } = await import("./linkedin");
+    const { createWebDiscoveryConnector } = await import("./web-discovery");
     const state = new BrowserStateStore(browserConfig.statePath);
     const runtime = new BrowserRuntime(browserConfig.profilePath);
     connectors.push(createLinkedInConnector(browserConfig, { runtime, state }));

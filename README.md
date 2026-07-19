@@ -18,7 +18,7 @@ The matcher has no secondary results. Hybrid, on-site, permanent, unrelated Swed
 - JobTech and Arbeitnow connectors that work without credentials.
 - Optional Jooble, Greenhouse, and Lever connectors.
 - Explainable match reasons and original application links.
-- SQLite persistence under `.data/job-radar.sqlite`.
+- Postgres persistence: a zero-config local database (pglite under `.data/pg`) in development, and Neon when hosted (see [DEPLOYMENT.md](DEPLOYMENT.md)).
 - A timezone-aware worker for 08:00 and 16:00 Europe/Stockholm.
 - A protected cron route for an external scheduler.
 
@@ -35,7 +35,9 @@ cp .env.example .env.local
 npm run dev
 ```
 
-Open [http://localhost:3000](http://localhost:3000). The dashboard can run its first search without optional credentials.
+Local development needs **no database setup**: when `DATABASE_URL` is unset the app uses a local pglite Postgres persisted under `.data/pg` (created automatically, survives restarts). Set `DATABASE_URL` in `.env.local` only if you want to point local dev at a real Neon branch. Basic-auth is skipped locally (`NODE_ENV !== production`).
+
+Open [http://localhost:3000](http://localhost:3000). The dashboard can run its first search immediately, without optional credentials.
 
 ## Optional source configuration
 
