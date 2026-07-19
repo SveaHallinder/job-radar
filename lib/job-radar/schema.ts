@@ -41,3 +41,21 @@ export const CREATE_SYNC_RUNS = `
     source_errors_json TEXT NOT NULL DEFAULT '[]'
   )
 `;
+
+// Queue of browser-sync requests. The hosted dashboard (serverless, no browser)
+// inserts a 'pending' row when someone clicks "Synka via min dator"; a local
+// worker on a machine with a logged-in browser claims it, runs the full sync
+// (incl. LinkedIn), and writes the outcome back. This decouples the button from
+// the machine — the request waits in Postgres until a worker is awake to run it.
+export const CREATE_SYNC_REQUESTS = `
+  CREATE TABLE IF NOT EXISTS sync_requests (
+    id TEXT PRIMARY KEY,
+    kind TEXT NOT NULL,
+    status TEXT NOT NULL,
+    requested_at TEXT NOT NULL,
+    started_at TEXT,
+    completed_at TEXT,
+    run_id TEXT,
+    message TEXT
+  )
+`;

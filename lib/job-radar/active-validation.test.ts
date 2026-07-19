@@ -10,6 +10,8 @@ import type {
   JobRepository,
   MatchedJob,
   StoredJob,
+  SyncRequest,
+  SyncRequestKind,
 } from "./types";
 
 const storedJob: StoredJob = {
@@ -64,8 +66,30 @@ class MemoryRepository implements JobRepository {
     return [];
   }
   async getDashboardStats(): Promise<DashboardStats> {
-    return { totalJobs: 0, newJobs: 0, lastRun: null };
+    return { totalJobs: 0, newJobs: 0, lastRun: null, latestBrowserRequest: null };
   }
+  async requestBrowserSync(
+    kind: SyncRequestKind,
+    requestedAt: string,
+  ): Promise<SyncRequest> {
+    return {
+      id: "req-1",
+      kind,
+      status: "pending",
+      requestedAt,
+      startedAt: null,
+      completedAt: null,
+      runId: null,
+      message: null,
+    };
+  }
+  async getLatestBrowserRequest(): Promise<SyncRequest | null> {
+    return null;
+  }
+  async claimNextBrowserRequest(): Promise<SyncRequest | null> {
+    return null;
+  }
+  async completeBrowserRequest(): Promise<void> {}
 }
 
 function memoryStateStore(initial: BrowserState) {

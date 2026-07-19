@@ -2,9 +2,13 @@
 
 import { useActionState, useMemo, useState } from "react";
 
-import { runSyncAction } from "../actions";
-import type { SyncActionState } from "../actions";
-import type { DashboardStats, StoredJob } from "@/lib/job-radar/types";
+import { requestBrowserSyncAction, runSyncAction } from "../actions";
+import type { BrowserSyncActionState, SyncActionState } from "../actions";
+import type {
+  DashboardStats,
+  StoredJob,
+  SyncRequest,
+} from "@/lib/job-radar/types";
 
 interface DashboardProps {
   jobs: StoredJob[];
@@ -16,6 +20,43 @@ const initialSyncState: SyncActionState = {
   message: "",
   summary: null,
 };
+
+const initialBrowserSyncState: BrowserSyncActionState = {
+  status: "idle",
+  message: "",
+  request: null,
+};
+
+function formatDateTime(value: string | null | undefined): string {
+  if (!value) return "";
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "";
+  return new Intl.DateTimeFormat("sv-SE", {
+    day: "numeric",
+    month: "short",
+    hour: "2-digit",
+    minute: "2-digit",
+    timeZone: "Europe/Stockholm",
+  }).format(date);
+}
+
+// The persisted request (from the DB) tells the visitor where their LinkedIn
+// request stands — it survives reloads and reflects what the worker wrote back.
+function browserRequestCaption(request: SyncRequest | null): string {
+  if (!request) return "Kräver att din dator är igång och inloggad på LinkedIn.";
+  switch (request.status) {
+    case "pending":
+      return "Väntar på att din dator ska köra den…";
+    case "running":
+      return "Din dator kör LinkedIn-synken just nu…";
+    case "done":
+      return `Senaste LinkedIn-synk klar ${formatDateTime(request.completedAt)}.`;
+    case "failed":
+      return `Senaste LinkedIn-synk misslyckades ${formatDateTime(request.completedAt)}.`;
+    default:
+      return "";
+  }
+}
 
 function RadarMark() {
   return (
@@ -75,6 +116,12 @@ export function Dashboard({ jobs, stats }: DashboardProps) {
     runSyncAction,
     initialSyncState,
   );
+  const [browserSyncState, browserSyncAction, browserSyncPending] =
+    useActionState(requestBrowserSyncAction, initialBrowserSyncState);
+
+  // Prefer the freshly-queued request from the action; otherwise fall back to
+  // the last known request loaded with the page.
+  const browserRequest = browserSyncState.request ?? stats.latestBrowserRequest;
 
   const sources = useMemo(
     () => [...new Set(jobs.map((job) => job.source))].sort((a, b) => a.localeCompare(b)),
@@ -160,12 +207,35 @@ export function Dashboard({ jobs, stats }: DashboardProps) {
       </section>
 
       <section className="command-strip" aria-label="Synk och statistik">
-        <form action={syncAction} className="sync-form">
-          <button className="sync-button" type="submit" disabled={syncPending}>
-            <span>{syncPending ? "Skannar källor" : "Kör sökning nu"}</span>
-            <span className={syncPending ? "sync-icon is-spinning" : "sync-icon"}>↻</span>
-          </button>
-        </form>
+        <div className="sync-cluster">
+          <form action={syncAction} className="sync-form">
+            <button className="sync-button" type="submit" disabled={syncPending}>
+              <span>{syncPending ? "Skannar källor" : "Kör sökning nu"}</span>
+              <span className={syncPending ? "sync-icon is-spinning" : "sync-icon"}>↻</span>
+            </button>
+          </form>
+
+          <form action={browserSyncAction} className="sync-form">
+            <button
+              className="sync-button secondary"
+              type="submit"
+              disabled={browserSyncPending || browserRequest?.status === "pending" || browserRequest?.status === "running"}
+              title="Kör en full synk inklusive LinkedIn via din egen dator"
+            >
+              <span>
+                {browserSyncPending
+                  ? "Begär…"
+                  : browserRequest?.status === "pending"
+                    ? "I kö…"
+                    : browserRequest?.status === "running"
+                      ? "Kör på din dator…"
+                      : "Synka LinkedIn via min dator"}
+              </span>
+              <span className="sync-icon">↯</span>
+            </button>
+            <span className="sync-caption">{browserRequestCaption(browserRequest)}</span>
+          </form>
+        </div>
 
         <div className="stat-cell">
           <span className="stat-label">Aktiva träffar</span>
@@ -194,6 +264,16 @@ export function Dashboard({ jobs, stats }: DashboardProps) {
         <div className={`sync-notice ${syncState.status}`} role="status">
           <span>{syncState.status === "success" ? "SYNC COMPLETE" : "SYNC ERROR"}</span>
           <p>{syncState.message}</p>
+        </div>
+      ) : null}
+
+      {browserSyncState.status !== "idle" ? (
+        <div
+          className={`sync-notice ${browserSyncState.status === "queued" ? "success" : "error"}`}
+          role="status"
+        >
+          <span>{browserSyncState.status === "queued" ? "LINKEDIN I KÖ" : "SYNC ERROR"}</span>
+          <p>{browserSyncState.message}</p>
         </div>
       ) : null}
 

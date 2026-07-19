@@ -13,6 +13,7 @@
     "test": "vitest run",
     "sync": "tsx scripts/sync.ts",
     "scheduler": "tsx scripts/scheduler.ts",
+    "worker": "tsx scripts/worker.ts",
     "linkedin:login": "tsx scripts/linkedin-login.ts",
     "db:migrate": "tsx scripts/migrate.ts"
   },

@@ -2,13 +2,16 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { neon } from "@neondatabase/serverless";
 
-import { CREATE_JOBS, CREATE_SYNC_RUNS } from "./schema";
+import { CREATE_JOBS, CREATE_SYNC_REQUESTS, CREATE_SYNC_RUNS } from "./schema";
 import type {
   DashboardStats,
   JobRepository,
   MatchedJob,
   SourceResult,
   StoredJob,
+  SyncRequest,
+  SyncRequestKind,
+  SyncRequestStatus,
   SyncStatus,
   SyncSummary,
 } from "./types";
@@ -48,7 +51,7 @@ function pgliteExecutor(): SqlExecutor {
         const { PGlite } = await import("@electric-sql/pglite");
         const dataDir = process.env.JOB_RADAR_PGLITE_PATH ?? ".data/pg";
         const db = new PGlite(dataDir);
-        await db.exec(`${CREATE_JOBS};${CREATE_SYNC_RUNS};`);
+        await db.exec(`${CREATE_JOBS};${CREATE_SYNC_RUNS};${CREATE_SYNC_REQUESTS};`);
         return db;
       })();
     }
@@ -96,6 +99,30 @@ interface SyncRow {
   updated_jobs: number;
   source_results_json: string;
   source_errors_json: string;
+}
+
+interface SyncRequestRow {
+  id: string;
+  kind: SyncRequestKind;
+  status: SyncRequestStatus;
+  requested_at: string;
+  started_at: string | null;
+  completed_at: string | null;
+  run_id: string | null;
+  message: string | null;
+}
+
+function mapSyncRequestRow(row: SyncRequestRow): SyncRequest {
+  return {
+    id: row.id,
+    kind: row.kind,
+    status: row.status,
+    requestedAt: row.requested_at,
+    startedAt: row.started_at,
+    completedAt: row.completed_at,
+    runId: row.run_id,
+    message: row.message,
+  };
 }
 
 function parseJsonArray<T>(value: string): T[] {
@@ -292,7 +319,72 @@ export class PostgresJobRepository implements JobRepository {
       totalJobs,
       newJobs: lastRun?.new_jobs ?? 0,
       lastRun: lastRun ? mapSyncRow(lastRun) : null,
+      latestBrowserRequest: await this.getLatestBrowserRequest("linkedin"),
     };
+  }
+
+  async requestBrowserSync(
+    kind: SyncRequestKind,
+    requestedAt: string,
+  ): Promise<SyncRequest> {
+    // Coalesce: if a request of this kind is already waiting or running, reuse
+    // it instead of queueing a duplicate. Clicking the button twice is a no-op.
+    const existing = await this.exec.query<SyncRequestRow>(
+      "SELECT * FROM sync_requests WHERE kind = $1 AND status IN ('pending','running') ORDER BY requested_at ASC LIMIT 1",
+      [kind],
+    );
+    if (existing[0]) return mapSyncRequestRow(existing[0]);
+
+    const id = randomUUID();
+    const rows = await this.exec.query<SyncRequestRow>(
+      "INSERT INTO sync_requests (id, kind, status, requested_at) VALUES ($1, $2, 'pending', $3) RETURNING *",
+      [id, kind, requestedAt],
+    );
+    return mapSyncRequestRow(rows[0]);
+  }
+
+  async getLatestBrowserRequest(kind: SyncRequestKind): Promise<SyncRequest | null> {
+    const rows = await this.exec.query<SyncRequestRow>(
+      "SELECT * FROM sync_requests WHERE kind = $1 ORDER BY requested_at DESC LIMIT 1",
+      [kind],
+    );
+    return rows[0] ? mapSyncRequestRow(rows[0]) : null;
+  }
+
+  async claimNextBrowserRequest(
+    kind: SyncRequestKind,
+    startedAt: string,
+  ): Promise<SyncRequest | null> {
+    // Atomically claim the oldest pending request. Also reclaim a request left
+    // 'running' for over 15 min — that means a worker died mid-run, so it must
+    // not block the queue forever. ISO-8601 UTC strings compare lexicographically.
+    const staleBefore = new Date(
+      new Date(startedAt).getTime() - 15 * 60 * 1000,
+    ).toISOString();
+    const rows = await this.exec.query<SyncRequestRow>(
+      `UPDATE sync_requests SET status = 'running', started_at = $3
+       WHERE id = (
+         SELECT id FROM sync_requests
+         WHERE kind = $1
+           AND (status = 'pending' OR (status = 'running' AND started_at < $2))
+         ORDER BY requested_at ASC LIMIT 1
+       )
+       RETURNING *`,
+      [kind, staleBefore, startedAt],
+    );
+    return rows[0] ? mapSyncRequestRow(rows[0]) : null;
+  }
+
+  async completeBrowserRequest(
+    id: string,
+    status: Extract<SyncRequestStatus, "done" | "failed">,
+    completedAt: string,
+    details: { runId?: string | null; message?: string | null },
+  ): Promise<void> {
+    await this.exec.query(
+      "UPDATE sync_requests SET status = $2, completed_at = $3, run_id = $4, message = $5 WHERE id = $1",
+      [id, status, completedAt, details.runId ?? null, details.message ?? null],
+    );
   }
 }
 
