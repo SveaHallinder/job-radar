@@ -92,6 +92,10 @@ class MemoryRepository implements JobRepository {
   }
 
   async deleteSearch(): Promise<void> {}
+
+  async getLatestRunStartedAt(): Promise<string | null> {
+    return null;
+  }
 }
 
 const matchingJob = {

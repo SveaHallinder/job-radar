@@ -120,6 +120,8 @@ export interface JobRepository {
   finishSyncRun(summary: SyncSummary): Promise<void>;
   listJobs(): Promise<StoredJob[]>;
   getDashboardStats(): Promise<DashboardStats>;
+  // Most recent run's start time (any status) — used to rate-limit manual syncs.
+  getLatestRunStartedAt(): Promise<string | null>;
   // Browser-sync request queue (button → local worker).
   requestBrowserSync(kind: SyncRequestKind, requestedAt: string): Promise<SyncRequest>;
   getLatestBrowserRequest(kind: SyncRequestKind): Promise<SyncRequest | null>;

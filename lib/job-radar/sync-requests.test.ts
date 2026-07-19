@@ -96,4 +96,11 @@ describe("PostgresJobRepository browser-sync request queue", () => {
     );
     expect(reclaimed).toBeNull();
   });
+
+  it("reports the latest run start time for the manual-sync cooldown", async () => {
+    expect(await repository.getLatestRunStartedAt()).toBeNull();
+    await repository.startSyncRun("2026-07-19T10:00:00.000Z");
+    await repository.startSyncRun("2026-07-19T10:05:00.000Z");
+    expect(await repository.getLatestRunStartedAt()).toBe("2026-07-19T10:05:00.000Z");
+  });
 });

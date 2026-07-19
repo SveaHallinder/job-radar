@@ -1,8 +1,18 @@
+import { timingSafeEqual } from "node:crypto";
+
 import { syncJobs } from "@/lib/job-radar/sync";
 
 export const runtime = "nodejs";
 export const maxDuration = 300;
 export const dynamic = "force-dynamic";
+
+// Constant-time comparison so the bearer check doesn't leak the secret via
+// response timing (matches the Basic Auth check in proxy.ts).
+function safeEqual(a: string, b: string): boolean {
+  const x = Buffer.from(a);
+  const y = Buffer.from(b);
+  return x.length === y.length && timingSafeEqual(x, y);
+}
 
 async function handleCron(request: Request): Promise<Response> {
   const secret = process.env.CRON_SECRET;
@@ -14,7 +24,7 @@ async function handleCron(request: Request): Promise<Response> {
     );
   }
 
-  if (request.headers.get("authorization") !== `Bearer ${secret}`) {
+  if (!safeEqual(request.headers.get("authorization") ?? "", `Bearer ${secret}`)) {
     console.warn("[job radar] Unauthorized cron request");
     return Response.json({ error: "[job radar] Unauthorized cron request" }, { status: 401 });
   }

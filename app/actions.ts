@@ -12,12 +12,33 @@ export interface SyncActionState {
   summary: SyncSummary | null;
 }
 
+// Guard rails for user-supplied search text (defense in depth; the form is
+// already behind Basic Auth).
+const MAX_KEYWORDS_LENGTH = 200;
+const MAX_LOCATION_LENGTH = 120;
+// Minimum gap between manual syncs so the button can't be spammed into
+// overlapping full syncs.
+const MANUAL_SYNC_COOLDOWN_MS = 15_000;
+
 export async function runSyncAction(
   _previousState: SyncActionState,
 ): Promise<SyncActionState> {
   void _previousState;
 
   try {
+    const repository = getJobRepository();
+    const lastStartedAt = await repository.getLatestRunStartedAt();
+    if (
+      lastStartedAt &&
+      Date.now() - new Date(lastStartedAt).getTime() < MANUAL_SYNC_COOLDOWN_MS
+    ) {
+      return {
+        status: "error",
+        message: "En sökning kördes precis — vänta några sekunder innan du kör igen.",
+        summary: null,
+      };
+    }
+
     const summary = await syncJobs();
     revalidatePath("/");
 
@@ -90,9 +111,9 @@ export async function requestBrowserSyncAction(
 
 // Add a user-defined search from the dashboard form. Used across every source.
 export async function addSearchAction(formData: FormData): Promise<void> {
-  const keywords = String(formData.get("keywords") ?? "").trim();
+  const keywords = String(formData.get("keywords") ?? "").trim().slice(0, MAX_KEYWORDS_LENGTH);
   if (!keywords) return;
-  const location = String(formData.get("location") ?? "").trim();
+  const location = String(formData.get("location") ?? "").trim().slice(0, MAX_LOCATION_LENGTH);
   const remoteOnly = formData.get("remoteOnly") !== "off";
 
   await getJobRepository().addSearch(
