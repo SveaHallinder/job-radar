@@ -2,11 +2,18 @@ import { createHash, randomUUID } from "node:crypto";
 
 import { neon } from "@neondatabase/serverless";
 
-import { CREATE_JOBS, CREATE_SYNC_REQUESTS, CREATE_SYNC_RUNS } from "./schema";
+import {
+  CREATE_JOBS,
+  CREATE_SEARCHES,
+  CREATE_SYNC_REQUESTS,
+  CREATE_SYNC_RUNS,
+} from "./schema";
 import type {
   DashboardStats,
   JobRepository,
   MatchedJob,
+  SearchRecord,
+  SearchSpec,
   SourceResult,
   StoredJob,
   SyncRequest,
@@ -51,7 +58,9 @@ function pgliteExecutor(): SqlExecutor {
         const { PGlite } = await import("@electric-sql/pglite");
         const dataDir = process.env.JOB_RADAR_PGLITE_PATH ?? ".data/pg";
         const db = new PGlite(dataDir);
-        await db.exec(`${CREATE_JOBS};${CREATE_SYNC_RUNS};${CREATE_SYNC_REQUESTS};`);
+        await db.exec(
+          `${CREATE_JOBS};${CREATE_SYNC_RUNS};${CREATE_SYNC_REQUESTS};${CREATE_SEARCHES};`,
+        );
         return db;
       })();
     }
@@ -110,6 +119,24 @@ interface SyncRequestRow {
   completed_at: string | null;
   run_id: string | null;
   message: string | null;
+}
+
+interface SearchRow {
+  id: string;
+  keywords: string;
+  location: string;
+  remote_only: boolean;
+  created_at: string;
+}
+
+function mapSearchRow(row: SearchRow): SearchRecord {
+  return {
+    id: row.id,
+    keywords: row.keywords,
+    location: row.location,
+    remoteOnly: row.remote_only,
+    createdAt: row.created_at,
+  };
 }
 
 function mapSyncRequestRow(row: SyncRequestRow): SyncRequest {
@@ -385,6 +412,27 @@ export class PostgresJobRepository implements JobRepository {
       "UPDATE sync_requests SET status = $2, completed_at = $3, run_id = $4, message = $5 WHERE id = $1",
       [id, status, completedAt, details.runId ?? null, details.message ?? null],
     );
+  }
+
+  async listSearches(): Promise<SearchRecord[]> {
+    const rows = await this.exec.query<SearchRow>(
+      "SELECT * FROM searches ORDER BY created_at ASC",
+    );
+    return rows.map(mapSearchRow);
+  }
+
+  async addSearch(spec: SearchSpec, createdAt: string): Promise<SearchRecord> {
+    const id = randomUUID();
+    const rows = await this.exec.query<SearchRow>(
+      `INSERT INTO searches (id, keywords, location, remote_only, created_at)
+       VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+      [id, spec.keywords.trim(), spec.location.trim(), spec.remoteOnly, createdAt],
+    );
+    return mapSearchRow(rows[0]);
+  }
+
+  async deleteSearch(id: string): Promise<void> {
+    await this.exec.query("DELETE FROM searches WHERE id = $1", [id]);
   }
 }
 

@@ -3,6 +3,7 @@ import { loadEnvConfig } from "@next/env";
 
 import {
   CREATE_JOBS,
+  CREATE_SEARCHES,
   CREATE_SYNC_REQUESTS,
   CREATE_SYNC_RUNS,
 } from "../lib/job-radar/schema";
@@ -22,8 +23,11 @@ async function migrate(): Promise<void> {
   await sql.query(CREATE_JOBS);
   await sql.query(CREATE_SYNC_RUNS);
   await sql.query(CREATE_SYNC_REQUESTS);
+  await sql.query(CREATE_SEARCHES);
 
-  console.info("[job radar] migration complete: jobs, sync_runs, sync_requests");
+  console.info(
+    "[job radar] migration complete: jobs, sync_runs, sync_requests, searches",
+  );
 }
 
 migrate().catch((error: unknown) => {

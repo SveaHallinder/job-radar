@@ -5,7 +5,9 @@ import {
 import { getBrowserDiscoveryConfig } from "../browser/config";
 import type { PageSnapshot } from "../browser/page-status";
 import { BrowserStateStore } from "../browser/state";
-import type { JobConnector } from "../types";
+import { getJobRepository } from "../db";
+import { buildLinkedInSearchUrl } from "../searches";
+import type { JobConnector, SearchRecord } from "../types";
 import { ArbeitnowConnector } from "./arbeitnow";
 import { GreenhouseConnector } from "./greenhouse";
 import { JobTechConnector } from "./jobtech";
@@ -34,12 +36,20 @@ export interface ConnectorConfiguration {
 
 export async function getConnectorConfiguration(
   env: NodeJS.ProcessEnv = process.env,
+  searchOverride?: SearchRecord[],
 ): Promise<ConnectorConfiguration> {
-  const connectors: JobConnector[] = [new JobTechConnector(), new ArbeitnowConnector()];
+  // User-managed searches drive every source's query. When none are configured,
+  // each connector falls back to its built-in defaults.
+  const searches = searchOverride ?? (await getJobRepository().listSearches());
+
+  const connectors: JobConnector[] = [
+    new JobTechConnector(searches),
+    new ArbeitnowConnector(searches),
+  ];
   const skippedSources: string[] = [];
 
   if (env.JOOBLE_API_KEY?.trim()) {
-    connectors.push(new JoobleConnector(env.JOOBLE_API_KEY.trim()));
+    connectors.push(new JoobleConnector(env.JOOBLE_API_KEY.trim(), searches));
   } else {
     skippedSources.push("Jooble · missing JOOBLE_API_KEY");
   }
@@ -52,7 +62,16 @@ export async function getConnectorConfiguration(
     connectors.push(new LeverConnector(company, site));
   }
 
-  const browserConfig = getBrowserDiscoveryConfig(env);
+  // LinkedIn search URLs come from the configured searches; fall back to the
+  // LINKEDIN_SEARCH_URLS env var when the user hasn't added any searches.
+  const searchLinkedInUrls = searches.map(buildLinkedInSearchUrl);
+  const baseBrowserConfig = getBrowserDiscoveryConfig(env);
+  const browserConfig = {
+    ...baseBrowserConfig,
+    linkedinSearchUrls: searchLinkedInUrls.length
+      ? searchLinkedInUrls
+      : baseBrowserConfig.linkedinSearchUrls,
+  };
   let activeValidator: ActiveValidator | undefined;
   if (!browserConfig.enabled) {
     skippedSources.push("LinkedIn · browser discovery disabled");

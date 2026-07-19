@@ -2,10 +2,16 @@
 
 import { useActionState, useMemo, useState } from "react";
 
-import { requestBrowserSyncAction, runSyncAction } from "../actions";
+import {
+  addSearchAction,
+  deleteSearchAction,
+  requestBrowserSyncAction,
+  runSyncAction,
+} from "../actions";
 import type { BrowserSyncActionState, SyncActionState } from "../actions";
 import type {
   DashboardStats,
+  SearchRecord,
   StoredJob,
   SyncRequest,
 } from "@/lib/job-radar/types";
@@ -13,6 +19,7 @@ import type {
 interface DashboardProps {
   jobs: StoredJob[];
   stats: DashboardStats;
+  searches: SearchRecord[];
 }
 
 const initialSyncState: SyncActionState = {
@@ -108,7 +115,7 @@ function formatLastRun(value: string | undefined): string {
   }).format(date);
 }
 
-export function Dashboard({ jobs, stats }: DashboardProps) {
+export function Dashboard({ jobs, stats, searches }: DashboardProps) {
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("All");
   const [source, setSource] = useState("All");
@@ -276,6 +283,70 @@ export function Dashboard({ jobs, stats }: DashboardProps) {
           <p>{browserSyncState.message}</p>
         </div>
       ) : null}
+
+      <section className="searches-section" aria-label="Sökningar">
+        <div className="searches-heading">
+          <div>
+            <p className="eyebrow">Sökprofiler</p>
+            <h2>Vad radarn letar efter</h2>
+          </div>
+          <p className="searches-note">
+            Sökorden styr alla källor (JobTech, Arbeitnow, Jooble och LinkedIn).
+            {searches.length === 0
+              ? " Inga sökningar ännu — radarn använder standard (sales, marketing)."
+              : null}
+          </p>
+        </div>
+
+        <form action={addSearchAction} className="search-add-form">
+          <label className="search-input">
+            <span>Sökord</span>
+            <input
+              type="text"
+              name="keywords"
+              required
+              placeholder="t.ex. account executive"
+            />
+          </label>
+          <label className="search-input">
+            <span>Ort (valfritt)</span>
+            <input type="text" name="location" placeholder="t.ex. Sverige" />
+          </label>
+          <label className="search-remote">
+            <input type="checkbox" name="remoteOnly" defaultChecked />
+            <span>Bara remote</span>
+          </label>
+          <button type="submit" className="search-add-button">
+            Lägg till
+          </button>
+        </form>
+
+        {searches.length ? (
+          <ul className="search-list">
+            {searches.map((search) => (
+              <li key={search.id} className="search-chip">
+                <span className="search-chip-main">
+                  <strong>{search.keywords}</strong>
+                  {search.location ? <span>· {search.location}</span> : null}
+                  {search.remoteOnly ? (
+                    <span className="search-chip-remote">remote</span>
+                  ) : null}
+                </span>
+                <form action={deleteSearchAction}>
+                  <input type="hidden" name="id" value={search.id} />
+                  <button
+                    type="submit"
+                    className="search-chip-remove"
+                    aria-label={`Ta bort sökningen ${search.keywords}`}
+                  >
+                    ✕
+                  </button>
+                </form>
+              </li>
+            ))}
+          </ul>
+        ) : null}
+      </section>
 
       <section className="results-section">
         <div className="results-heading">

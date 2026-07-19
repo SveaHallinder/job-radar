@@ -1,5 +1,6 @@
 import { fetchJson } from "../fetch";
-import type { JobConnector, SourceJob } from "../types";
+import { keywordsFromSearches } from "../searches";
+import type { JobConnector, SearchSpec, SourceJob } from "../types";
 
 export interface JobTechHit {
   id: string;
@@ -52,9 +53,11 @@ export function mapJobTechHit(hit: JobTechHit): SourceJob {
 export class JobTechConnector implements JobConnector {
   readonly name = "JobTech";
 
+  constructor(private readonly searches?: SearchSpec[]) {}
+
   async fetchJobs(): Promise<SourceJob[]> {
     const responses = await Promise.all(
-      ["sales", "marketing"].map((query) => {
+      keywordsFromSearches(this.searches).map((query) => {
         const url = new URL("https://jobsearch.api.jobtechdev.se/search");
         url.searchParams.set("q", query);
         url.searchParams.set("limit", "100");

@@ -1,5 +1,6 @@
 import { fetchJson, htmlToText } from "../fetch";
-import type { JobConnector, SourceJob } from "../types";
+import { keywordsFromSearches } from "../searches";
+import type { JobConnector, SearchSpec, SourceJob } from "../types";
 
 export interface ArbeitnowJob {
   slug: string;
@@ -41,9 +42,11 @@ export function mapArbeitnowJob(job: ArbeitnowJob): SourceJob {
 export class ArbeitnowConnector implements JobConnector {
   readonly name = "Arbeitnow";
 
+  constructor(private readonly searches?: SearchSpec[]) {}
+
   async fetchJobs(): Promise<SourceJob[]> {
     const responses = await Promise.all(
-      ["sales", "marketing"].map((query) => {
+      keywordsFromSearches(this.searches).map((query) => {
         const url = new URL("https://www.arbeitnow.com/api/job-board-api");
         url.searchParams.set("search", query);
         return fetchJson<ArbeitnowResponse>(url.toString(), {}, `Arbeitnow ${query}`);

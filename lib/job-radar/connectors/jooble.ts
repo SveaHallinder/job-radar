@@ -1,5 +1,5 @@
 import { fetchJson, htmlToText } from "../fetch";
-import type { JobConnector, SourceJob } from "../types";
+import type { JobConnector, SearchSpec, SourceJob } from "../types";
 
 export interface JoobleJob {
   id: string | number;
@@ -38,15 +38,26 @@ export function mapJoobleJob(job: JoobleJob): SourceJob {
 export class JoobleConnector implements JobConnector {
   readonly name = "Jooble";
 
-  constructor(private readonly apiKey: string) {}
+  constructor(
+    private readonly apiKey: string,
+    private readonly configuredSearches?: SearchSpec[],
+  ) {}
 
   async fetchJobs(): Promise<SourceJob[]> {
-    const searches = ["Europe", "Sweden", "Bucharest"].flatMap((location) =>
-      ["remote contract sales", "remote freelance marketing"].map((keywords) => ({
-        keywords,
-        location,
-      })),
-    );
+    const configured = (this.configuredSearches ?? [])
+      .map((search) => ({
+        keywords: search.keywords.trim(),
+        location: search.location.trim() || "Europe",
+      }))
+      .filter((search) => search.keywords);
+    const searches = configured.length
+      ? configured
+      : ["Europe", "Sweden", "Bucharest"].flatMap((location) =>
+          ["remote contract sales", "remote freelance marketing"].map((keywords) => ({
+            keywords,
+            location,
+          })),
+        );
     const responses = await Promise.all(
       searches.map((body) =>
         fetchJson<JoobleResponse>(
