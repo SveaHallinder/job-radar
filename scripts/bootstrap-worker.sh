@@ -48,25 +48,21 @@ npx playwright install chromium
 if [ ! -f .env.local ]; then
   say "Konfiguration"
   DB_URL="${DATABASE_URL:-}"
-  LI_URL="${LINKEDIN_SEARCH_URLS:-}"
   if [ -z "$DB_URL" ]; then
     printf "Klistra in Neon DATABASE_URL (fråga Svea): "
     read -r DB_URL
   fi
-  if [ -z "$LI_URL" ]; then
-    printf "Klistra in din LinkedIn Jobs-sök-URL: "
-    read -r LI_URL
-  fi
   [ -n "$DB_URL" ] || die "DATABASE_URL krävs."
+  # Search terms are managed on the website ("Sökprofiler"), so no LinkedIn URL
+  # is needed here. LINKEDIN_SEARCH_URLS can be set later as a fallback if wanted.
   cat > .env.local <<ENVEOF
 DATABASE_URL=$DB_URL
 JOB_RADAR_BROWSER_DISCOVERY=1
-LINKEDIN_SEARCH_URLS=$LI_URL
 LINKEDIN_BOOTSTRAP_MAX_RESULTS=200
 LINKEDIN_INCREMENTAL_MAX_RESULTS=100
 LINKEDIN_MAX_DETAILS=80
 ENVEOF
-  echo "  Skrev .env.local"
+  echo "  Skrev .env.local — lägg till sökord på sajten under \"Sökprofiler\"."
 else
   say ".env.local finns redan — behåller den"
 fi

@@ -48,10 +48,6 @@ DATABASE_URL=postgresql://...pooler...neon.tech/neondb?sslmode=require
 # Turn LinkedIn (and web discovery) on for this machine.
 JOB_RADAR_BROWSER_DISCOVERY=1
 
-# The real LinkedIn Jobs search(es) to scrape. Pipe-separate multiple URLs.
-# Open the search you want on linkedin.com/jobs, copy the URL from the address bar.
-LINKEDIN_SEARCH_URLS=https://www.linkedin.com/jobs/search/?keywords=...&location=...
-
 # Optional: raise the low QA defaults so it actually pulls a useful batch.
 LINKEDIN_BOOTSTRAP_MAX_RESULTS=200
 LINKEDIN_INCREMENTAL_MAX_RESULTS=100
@@ -60,6 +56,11 @@ LINKEDIN_MAX_DETAILS=80
 
 > The `DATABASE_URL` is the pooled Neon string — the same one the Vercel deploy uses.
 > Ask Svea for it, or copy it from the Vercel project's environment variables.
+
+> **Search terms are set on the website, not here.** Open the site → "Sökprofiler"
+> and add keywords/location there. They're shared with this worker automatically.
+> (`LINKEDIN_SEARCH_URLS` still works as a fallback if you'd rather pin a URL in the
+> env, but you don't need it once you've added searches in the UI.)
 
 ### 3. Log in to LinkedIn once
 
