@@ -99,6 +99,9 @@ class MemoryRepository implements JobRepository {
     return { id: "search-1", ...spec, createdAt };
   }
   async deleteSearch(): Promise<void> {}
+  async getLatestRunStartedAt(): Promise<string | null> {
+    return null;
+  }
 }
 
 function memoryStateStore(initial: BrowserState) {

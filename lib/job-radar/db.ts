@@ -333,20 +333,22 @@ export class PostgresJobRepository implements JobRepository {
   }
 
   async getDashboardStats(): Promise<DashboardStats> {
-    const countRows = await this.exec.query<{ count: string | number }>(
-      "SELECT COUNT(*) AS count FROM jobs",
-    );
+    // These three reads are independent — run them as one parallel batch.
+    const [countRows, lastRunRows, latestBrowserRequest] = await Promise.all([
+      this.exec.query<{ count: string | number }>("SELECT COUNT(*) AS count FROM jobs"),
+      this.exec.query<SyncRow>(
+        "SELECT * FROM sync_runs WHERE completed_at IS NOT NULL ORDER BY started_at DESC LIMIT 1",
+      ),
+      this.getLatestBrowserRequest("linkedin"),
+    ]);
     const totalJobs = Number(countRows[0].count);
-    const lastRunRows = await this.exec.query<SyncRow>(
-      "SELECT * FROM sync_runs WHERE completed_at IS NOT NULL ORDER BY started_at DESC LIMIT 1",
-    );
     const lastRun = lastRunRows[0];
 
     return {
       totalJobs,
       newJobs: lastRun?.new_jobs ?? 0,
       lastRun: lastRun ? mapSyncRow(lastRun) : null,
-      latestBrowserRequest: await this.getLatestBrowserRequest("linkedin"),
+      latestBrowserRequest,
     };
   }
 
@@ -412,6 +414,13 @@ export class PostgresJobRepository implements JobRepository {
       "UPDATE sync_requests SET status = $2, completed_at = $3, run_id = $4, message = $5 WHERE id = $1",
       [id, status, completedAt, details.runId ?? null, details.message ?? null],
     );
+  }
+
+  async getLatestRunStartedAt(): Promise<string | null> {
+    const rows = await this.exec.query<{ started_at: string }>(
+      "SELECT started_at FROM sync_runs ORDER BY started_at DESC LIMIT 1",
+    );
+    return rows[0]?.started_at ?? null;
   }
 
   async listSearches(): Promise<SearchRecord[]> {
