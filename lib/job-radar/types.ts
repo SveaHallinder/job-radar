@@ -72,6 +72,20 @@ export interface DashboardStats {
   latestBrowserRequest: SyncRequest | null;
 }
 
+// A user-defined search. `keywords` drives every source's query; `location`
+// is used by Jooble and the LinkedIn URL; `remoteOnly` narrows LinkedIn to
+// remote roles (the matcher enforces remote regardless).
+export interface SearchSpec {
+  keywords: string;
+  location: string;
+  remoteOnly: boolean;
+}
+
+export interface SearchRecord extends SearchSpec {
+  id: string;
+  createdAt: string;
+}
+
 export type SyncRequestKind = "linkedin";
 
 export type SyncRequestStatus = "pending" | "running" | "done" | "failed";
@@ -119,4 +133,8 @@ export interface JobRepository {
     completedAt: string,
     details: { runId?: string | null; message?: string | null },
   ): Promise<void>;
+  // User-managed searches.
+  listSearches(): Promise<SearchRecord[]>;
+  addSearch(spec: SearchSpec, createdAt: string): Promise<SearchRecord>;
+  deleteSearch(id: string): Promise<void>;
 }

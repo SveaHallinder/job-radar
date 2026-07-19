@@ -59,3 +59,18 @@ export const CREATE_SYNC_REQUESTS = `
     message TEXT
   )
 `;
+
+// User-managed searches (keywords + optional location), edited from the
+// dashboard. Every source reads these: the API connectors use the keywords as
+// their query and Jooble also uses the location, while LinkedIn search URLs are
+// built from them. When the table is empty, each connector falls back to its
+// built-in defaults so the radar still works out of the box.
+export const CREATE_SEARCHES = `
+  CREATE TABLE IF NOT EXISTS searches (
+    id TEXT PRIMARY KEY,
+    keywords TEXT NOT NULL,
+    location TEXT NOT NULL DEFAULT '',
+    remote_only BOOLEAN NOT NULL DEFAULT true,
+    created_at TEXT NOT NULL
+  )
+`;

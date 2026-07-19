@@ -9,6 +9,8 @@ import type {
   DashboardStats,
   JobRepository,
   MatchedJob,
+  SearchRecord,
+  SearchSpec,
   StoredJob,
   SyncRequest,
   SyncRequestKind,
@@ -90,6 +92,13 @@ class MemoryRepository implements JobRepository {
     return null;
   }
   async completeBrowserRequest(): Promise<void> {}
+  async listSearches(): Promise<SearchRecord[]> {
+    return [];
+  }
+  async addSearch(spec: SearchSpec, createdAt: string): Promise<SearchRecord> {
+    return { id: "search-1", ...spec, createdAt };
+  }
+  async deleteSearch(): Promise<void> {}
 }
 
 function memoryStateStore(initial: BrowserState) {

@@ -87,3 +87,24 @@ export async function requestBrowserSyncAction(
     };
   }
 }
+
+// Add a user-defined search from the dashboard form. Used across every source.
+export async function addSearchAction(formData: FormData): Promise<void> {
+  const keywords = String(formData.get("keywords") ?? "").trim();
+  if (!keywords) return;
+  const location = String(formData.get("location") ?? "").trim();
+  const remoteOnly = formData.get("remoteOnly") !== "off";
+
+  await getJobRepository().addSearch(
+    { keywords, location, remoteOnly },
+    new Date().toISOString(),
+  );
+  revalidatePath("/");
+}
+
+export async function deleteSearchAction(formData: FormData): Promise<void> {
+  const id = String(formData.get("id") ?? "").trim();
+  if (!id) return;
+  await getJobRepository().deleteSearch(id);
+  revalidatePath("/");
+}
